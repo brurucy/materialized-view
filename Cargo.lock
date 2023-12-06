@@ -298,6 +298,7 @@ dependencies = [
  "dbsp",
  "indexmap 2.1.0",
  "lasso",
+ "lazy_static",
  "ordered-float",
  "pretty_assertions",
  "regex",

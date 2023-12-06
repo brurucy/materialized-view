@@ -11,17 +11,24 @@ use lasso::{Key, Rodeo, Spur};
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use lazy_static::lazy_static;
+use dashmap::DashMap;
+
 pub type FlattenedInternedFact = (usize, Vec<TypedValue>);
 pub type FlattenedInternedAtom = (usize, Vec<InternedTerm>);
 pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInternedAtom>);
+
+lazy_static! {
+    static ref FACT_REGISTRY: DashMap<usize, Vec<TypedValue>> = DashMap::new();
+}
 
 pub type Weight = isize;
 pub struct ChibiRuntime {
     interner: Rodeo,
     dbsp_runtime: DBSPHandle,
-    fact_sink: CollectionHandle<FlattenedInternedFact, Weight>,
+    fact_sink: CollectionHandle<(usize, Row), Weight>,
     rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
-    fact_source: OutputHandle<OrdIndexedZSet<usize, Vec<TypedValue>, Weight>>,
+    fact_source: OutputHandle<OrdIndexedZSet<usize, Row, Weight>>,
     materialisation: RelationStorage,
     safe: bool,
 }
@@ -91,8 +98,6 @@ pub fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(usize, V
         fresh_variables.clear();
     }
 
-    println!("{:?}", out);
-
     return out;
 }
 
@@ -124,8 +129,11 @@ impl ChibiRuntime {
     pub fn insert(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
         let interned_symbol = self.interner.get_or_intern(relation);
 
+        let fact_hash = compute_fact_hash(&ground_atom);
+        FACT_REGISTRY.insert(fact_hash, ground_atom.clone());
+
         self.fact_sink
-            .push((interned_symbol.into_usize(), ground_atom.clone()), 1);
+            .push((interned_symbol.into_usize(), fact_hash), 1);
 
         self.safe = false;
 
@@ -148,7 +156,7 @@ impl ChibiRuntime {
             self.fact_sink.push(
                 (
                     interned_symbol.into_usize(),
-                    candidate.clone(),
+                    compute_fact_hash(candidate),
                 ),
                 -1,
             );
@@ -203,9 +211,9 @@ impl ChibiRuntime {
                 let sym = self.interner.resolve(&spur);
 
                 if weight.signum() > 0 {
-                    self.materialisation.insert(sym, fresh_fact);
+                    self.materialisation.insert(sym, FACT_REGISTRY.get(&fresh_fact).unwrap().clone());
                 } else {
-                    self.materialisation.remove(sym, &fresh_fact);
+                    self.materialisation.remove(sym, &FACT_REGISTRY.get(&fresh_fact).unwrap());
                 }
             });
 
@@ -224,18 +232,18 @@ impl ChibiRuntime {
                 let (rule_source, rule_sink) =
                     circuit.add_input_zset::<FlattenedInternedRule, Weight>();
                 let (fact_source, fact_sink) =
-                    circuit.add_input_zset::<FlattenedInternedFact, Weight>();
+                    circuit.add_input_zset::<(usize, Row), Weight>();
 
                 let unique_column_sets = rule_source
                     .flat_map_index(compute_unique_column_sets)
                     .distinct();
 
                 let hashed_facts_and_facts_by_symbol = fact_source
-                    .map_index(|(fact_symbol, fact)| (*fact_symbol, (compute_fact_hash(fact), fact.clone())));
+                    .index();
 
                 let fact_index = hashed_facts_and_facts_by_symbol
-                    .join_index(&unique_column_sets, |relation_symbol, (fact_hash, fact), column_set| {
-                        Some(((*relation_symbol, compute_projection_hash(fact, column_set)), *fact_hash))
+                    .join_index(&unique_column_sets, |relation_symbol, fact_hash, column_set| {
+                        Some(((*relation_symbol, compute_projection_hash(&FACT_REGISTRY.get(fact_hash).unwrap(), column_set)), *fact_hash))
                     });
 
                 let rules_by_id =
@@ -253,13 +261,13 @@ impl ChibiRuntime {
                 let start = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), Rewrite::default()));
 
                 let facts_by_hashed_facts_and_symbol = hashed_facts_and_facts_by_symbol
-                    .map_index(|(fact_symbol, (hashed_fact, fact))| ((*fact_symbol, *hashed_fact), fact.clone()));
+                    .map_index(|(fact_symbol, hashed_fact)| ((*fact_symbol, *hashed_fact)));
 
                 let (inferences, _, _) = circuit
                     .recursive(
                         |child,
                         (idb, idb_index, rewrites): (
-                             Stream<_, OrdIndexedZSet<(usize, Row), Vec<TypedValue>, isize>>,
+                             Stream<_, OrdIndexedZSet<usize, Row, isize>>,
                              Stream<_, OrdIndexedZSet<(usize, Row), Row, isize>>,
                              Stream<_, OrdIndexedZSet<(usize, usize), Rewrite, isize>>,
                         )| {
@@ -286,39 +294,35 @@ impl ChibiRuntime {
                                 },
                             );
 
-                            let product_setup =
-                                idb_index.join_index(&current_rewrites, |(relation_symbol, _projection), fact_hash, ((rule_id, atom_position), fresh_atom, rewrite)| {
-
-                                    return Some(((*relation_symbol, *fact_hash), ((*rule_id, *atom_position + 1), fresh_atom.clone(), rewrite.clone())));
-                                });
-
-                            let cartesian_product = product_setup
-                                .join_index(&idb, |(_relation_symbol, _fact_hash), ((rule_id, atom_position), fresh_atom, rewrite), fact| {
-                                    let unification = unify(fresh_atom, fact).unwrap();
+                            let cartesian_product =
+                                idb_index.join_index(&current_rewrites, |(_relation_symbol, _projection), fact_hash, ((rule_id, atom_position), fresh_atom, rewrite)| {
+                                    let unification = unify(fresh_atom, &FACT_REGISTRY.get(fact_hash).unwrap()).unwrap();
                                     let mut extended_sub = rewrite.clone();
                                     extended_sub.extend(unification);
 
-                                    Some(((*rule_id, *atom_position), extended_sub))
+                                    Some(((*rule_id, *atom_position + 1), extended_sub))
                                 });
 
                             let fresh_facts = end_for_grounding
                                 .join_index(&cartesian_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
                                     let fresh_fact = final_substitution.ground(head_atom);
+                                    let fresh_fact_hash = compute_fact_hash(&fresh_fact);
+                                    FACT_REGISTRY.insert(fresh_fact_hash, fresh_fact);
 
-                                    Some((*head_atom_symbol, fresh_fact))
+                                    Some((*head_atom_symbol, fresh_fact_hash))
                                 });
 
                             let fresh_projections = fresh_facts
-                                .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
-                                    Some(((*relation_symbol, compute_projection_hash(fact, column_set)), compute_fact_hash(fact)))
+                                .join_index(&unique_column_sets, |relation_symbol, fact_hash, column_set| {
+                                    Some(((*relation_symbol, compute_projection_hash(&FACT_REGISTRY.get(fact_hash).unwrap(), column_set)), *fact_hash))
                                 });
 
-                            Ok((edb.plus(&fresh_facts.map_index(|(symbol, fresh_fact)| ((*symbol, compute_fact_hash(fresh_fact)), fresh_fact.clone()))), edb_index.plus(&fresh_projections), start.plus(&cartesian_product)))
+                            Ok((edb.plus(&fresh_facts), edb_index.plus(&fresh_projections), start.plus(&cartesian_product)))
                         },
                     )
                     .unwrap();
 
-                Ok((((inferences.map_index(|((symbol, _), fresh_fact)| ((*symbol, fresh_fact.clone()))).output()), fact_sink), rule_sink))
+                Ok((((inferences.output(), fact_sink), rule_sink)))
             })
             .unwrap();
 
