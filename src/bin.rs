@@ -1,5 +1,5 @@
 use ascent::ascent;
-use chibi_datalog::engine::datalog::ChibiRuntime;
+use chibi_datalog::engine::datalog::{ChibiRuntime, FACT_REGISTRY};
 use crepe::crepe;
 use datalog_rule_macro::program;
 use datalog_syntax::*;

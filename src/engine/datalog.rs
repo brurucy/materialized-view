@@ -12,14 +12,16 @@ use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use lazy_static::lazy_static;
-use dashmap::DashMap;
+use sharded_slab::{Config, Slab};
 
 pub type FlattenedInternedFact = (usize, Vec<TypedValue>);
 pub type FlattenedInternedAtom = (usize, Vec<InternedTerm>);
 pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInternedAtom>);
 
+pub struct TinyConfig;
+
 lazy_static! {
-    static ref FACT_REGISTRY: DashMap<usize, Vec<TypedValue>> = DashMap::new();
+    pub static ref FACT_REGISTRY: Slab<Vec<TypedValue>> = Slab::new();
 }
 
 pub type Weight = isize;
@@ -129,8 +131,7 @@ impl ChibiRuntime {
     pub fn insert(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
         let interned_symbol = self.interner.get_or_intern(relation);
 
-        let fact_hash = compute_fact_hash(&ground_atom);
-        FACT_REGISTRY.insert(fact_hash, ground_atom.clone());
+        let fact_hash = FACT_REGISTRY.insert(ground_atom.clone()).unwrap();
 
         self.fact_sink
             .push((interned_symbol.into_usize(), fact_hash), 1);
@@ -211,9 +212,9 @@ impl ChibiRuntime {
                 let sym = self.interner.resolve(&spur);
 
                 if weight.signum() > 0 {
-                    self.materialisation.insert(sym, FACT_REGISTRY.get(&fresh_fact).unwrap().clone());
+                    self.materialisation.insert(sym, FACT_REGISTRY.get(fresh_fact).unwrap().clone());
                 } else {
-                    self.materialisation.remove(sym, &FACT_REGISTRY.get(&fresh_fact).unwrap());
+                    self.materialisation.remove(sym, &FACT_REGISTRY.get(fresh_fact).unwrap());
                 }
             });
 
@@ -243,7 +244,7 @@ impl ChibiRuntime {
 
                 let fact_index = hashed_facts_and_facts_by_symbol
                     .join_index(&unique_column_sets, |relation_symbol, fact_hash, column_set| {
-                        Some(((*relation_symbol, compute_projection_hash(&FACT_REGISTRY.get(fact_hash).unwrap(), column_set)), *fact_hash))
+                        Some(((*relation_symbol, compute_projection_hash(&FACT_REGISTRY.get(*fact_hash).unwrap(), column_set)), *fact_hash))
                     });
 
                 let rules_by_id =
@@ -296,7 +297,7 @@ impl ChibiRuntime {
 
                             let cartesian_product =
                                 idb_index.join_index(&current_rewrites, |(_relation_symbol, _projection), fact_hash, ((rule_id, atom_position), fresh_atom, rewrite)| {
-                                    let unification = unify(fresh_atom, &FACT_REGISTRY.get(fact_hash).unwrap()).unwrap();
+                                    let unification = unify(fresh_atom, &FACT_REGISTRY.get(*fact_hash).unwrap()).unwrap();
                                     let mut extended_sub = rewrite.clone();
                                     extended_sub.extend(unification);
 
@@ -306,15 +307,14 @@ impl ChibiRuntime {
                             let fresh_facts = end_for_grounding
                                 .join_index(&cartesian_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
                                     let fresh_fact = final_substitution.ground(head_atom);
-                                    let fresh_fact_hash = compute_fact_hash(&fresh_fact);
-                                    FACT_REGISTRY.insert(fresh_fact_hash, fresh_fact);
+                                    let fresh_fact_hash = FACT_REGISTRY.insert(fresh_fact).unwrap();
 
                                     Some((*head_atom_symbol, fresh_fact_hash))
                                 });
 
                             let fresh_projections = fresh_facts
                                 .join_index(&unique_column_sets, |relation_symbol, fact_hash, column_set| {
-                                    Some(((*relation_symbol, compute_projection_hash(&FACT_REGISTRY.get(fact_hash).unwrap(), column_set)), *fact_hash))
+                                    Some(((*relation_symbol, compute_projection_hash(&FACT_REGISTRY.get(*fact_hash).unwrap(), column_set)), *fact_hash))
                                 });
 
                             Ok((edb.plus(&fresh_facts), edb_index.plus(&fresh_projections), start.plus(&cartesian_product)))
