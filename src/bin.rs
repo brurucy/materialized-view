@@ -1,5 +1,5 @@
 use ascent::ascent;
-use chibi_datalog::engine::datalog::ChibiRuntime;
+use chibi_datalog::engine::datalog::DyreRuntime;
 use crepe::crepe;
 use datalog_rule_macro::program;
 use datalog_syntax::*;
@@ -32,11 +32,11 @@ fn main() {
         tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)]
     };
 
-    let mut chibi_runtime = ChibiRuntime::new(program);
+    let mut chibi_runtime = DyreRuntime::new(program);
     let mut ascnt_runtime = AscentProgram::default();
     let mut crepe_runtime = Crepe::new();
 
-    let data = include_str!("../data/graph10000.txt");
+    let data = include_str!("../data/graph1000.txt");
     data.lines().into_iter().for_each(|line| {
         let triple: Vec<_> = line.split(" ").collect();
         let from: usize = triple[0].parse().unwrap();
@@ -127,7 +127,7 @@ fn main() {
     rodeo.get_or_intern(RANGE);
     rodeo.get_or_intern(PROPERTY);
 
-    let mut chibi_runtime = ChibiRuntime::new(program);
+    let mut chibi_runtime = DyreRuntime::new(program);
     let mut ascnt_runtime = AscentProgram::default();
     let mut crepe_runtime = Crepe::new();
 
@@ -147,6 +147,7 @@ fn main() {
             ascnt_runtime.RDF.push((s, p, o));
         }
     });
+    println!("Number of {:?}", rodeo.iter().len());
 
     let now = Instant::now();
     chibi_runtime.poll();

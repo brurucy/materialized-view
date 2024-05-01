@@ -42,16 +42,4 @@ impl RelationStorage {
 
         false
     }
-
-    pub fn len(&self) -> usize {
-        return self
-            .inner
-            .iter()
-            .map(|ref_multi| ref_multi.value().len())
-            .sum();
-    }
-
-    pub fn is_empty(&self) -> bool {
-        return self.len() == 0;
-    }
 }

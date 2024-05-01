@@ -199,7 +199,7 @@ pub fn unify(left: &Vec<InternedTerm>, right: &AnonymousGroundAtom) -> Option<Re
 
     for (left_term, right_term) in left.iter().zip(right.iter()) {
         match left_term {
-            // If both terms are constants and they don't match, unification fails
+            // If both terms are constants, and they don't match, unification fails
             InternedTerm::Constant(l_const) if l_const != right_term => return None,
             // If left term is a variable, substitute it with the right constant
             InternedTerm::Variable(l_var) => {

@@ -11,22 +11,26 @@ use lasso::{Key, Rodeo, Spur};
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-pub type FlattenedInternedFact = (usize, Vec<TypedValue>);
+use dbsp::circuit::WithClock;
+use crate::engine::encoding::{decode_fact, encode_atom, encode_fact, EncodedAtom, project_encoded_atom, project_encoded_fact, unify_encoded_atom};
+
+pub type EncodedFactWithRelationId = (usize, EncodedAtom);
+pub type EncodedAtomWithRelationId = (usize, EncodedAtom);
 pub type FlattenedInternedAtom = (usize, Vec<InternedTerm>);
 pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInternedAtom>);
 
 pub type Weight = isize;
-pub struct ChibiRuntime {
+pub struct DyreRuntime {
     interner: Rodeo,
     dbsp_runtime: DBSPHandle,
-    fact_sink: CollectionHandle<FlattenedInternedFact, Weight>,
+    fact_sink: CollectionHandle<usize, (u64, Weight)>,
     rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
-    fact_source: OutputHandle<OrdIndexedZSet<usize, Vec<TypedValue>, Weight>>,
+    fact_source: OutputHandle<OrdIndexedZSet<usize, EncodedAtom, Weight>>,
     materialisation: RelationStorage,
     safe: bool,
 }
 
-type Row = usize;
+type Row = u64;
 
 fn compute_atom_hash<'a>(key: impl Iterator<Item=&'a InternedTerm>) -> Row {
     let mut hasher = AHasher::default();
@@ -91,8 +95,6 @@ pub fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(usize, V
         fresh_variables.clear();
     }
 
-    println!("{:?}", out);
-
     return out;
 }
 
@@ -120,12 +122,12 @@ fn is_ground(atom: &Vec<InternedTerm>) -> bool {
     });
 }
 
-impl ChibiRuntime {
+impl DyreRuntime {
     pub fn insert(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
         let interned_symbol = self.interner.get_or_intern(relation);
 
         self.fact_sink
-            .push((interned_symbol.into_usize(), ground_atom.clone()), 1);
+            .push(interned_symbol.into_usize(), (encode_fact(&ground_atom), 1));
 
         self.safe = false;
 
@@ -145,13 +147,7 @@ impl ChibiRuntime {
             .collect();
 
         removal_targets.iter().for_each(|candidate| {
-            self.fact_sink.push(
-                (
-                    interned_symbol.into_usize(),
-                    candidate.clone(),
-                ),
-                -1,
-            );
+            self.fact_sink.push(interned_symbol.into_usize(), (encode_fact(candidate), -1));
         });
 
         self.safe = false;
@@ -201,15 +197,14 @@ impl ChibiRuntime {
             .for_each(|(relation_identifier, fresh_fact, weight)| {
                 let spur = Spur::try_from_usize(relation_identifier).unwrap();
                 let sym = self.interner.resolve(&spur);
+                let decoded_fact = decode_fact(fresh_fact);
 
                 if weight.signum() > 0 {
-                    self.materialisation.insert(sym, fresh_fact);
+                    self.materialisation.insert(sym, decoded_fact);
                 } else {
-                    self.materialisation.remove(sym, &fresh_fact);
+                    self.materialisation.remove(sym, &decoded_fact);
                 }
             });
-
-        self.dbsp_runtime.dump_profile("./prof").unwrap();
 
         self.safe = true;
     }
@@ -224,77 +219,68 @@ impl ChibiRuntime {
                 let (rule_source, rule_sink) =
                     circuit.add_input_zset::<FlattenedInternedRule, Weight>();
                 let (fact_source, fact_sink) =
-                    circuit.add_input_zset::<FlattenedInternedFact, Weight>();
+                    circuit.add_input_indexed_zset::<usize, EncodedAtom, Weight>();
 
                 let unique_column_sets = rule_source
                     .flat_map_index(compute_unique_column_sets)
                     .distinct();
-
-                let hashed_facts_and_facts_by_symbol = fact_source
-                    .map_index(|(fact_symbol, fact)| (*fact_symbol, (compute_fact_hash(fact), fact.clone())));
-
-                let fact_index = hashed_facts_and_facts_by_symbol
-                    .join_index(&unique_column_sets, |relation_symbol, (fact_hash, fact), column_set| {
-                        Some(((*relation_symbol, compute_projection_hash(fact, column_set)), *fact_hash))
-                    });
-
                 let rules_by_id =
                     rule_source.index_with(|(id, head, body)| (*id, (head.clone(), body.clone())));
-
                 let iteration = rules_by_id.flat_map_index(|(rule_id, (_head, body))| {
                     body.iter()
                         .enumerate()
                         .map(move |(atom_position, atom)| ((*rule_id, atom_position), atom.clone()))
                         .collect::<Vec<_>>()
                 });
-
                 let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), head.clone()));
+                let empty_rewrites = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), Rewrite::default()));
 
-                let start = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), Rewrite::default()));
-
-                let facts_by_hashed_facts_and_symbol = hashed_facts_and_facts_by_symbol
-                    .map_index(|(fact_symbol, (hashed_fact, fact))| ((*fact_symbol, *hashed_fact), fact.clone()));
+                let fact_index = fact_source
+                    .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
+                        Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
+                    });
 
                 let (inferences, _, _) = circuit
                     .recursive(
                         |child,
                         (idb, idb_index, rewrites): (
-                             Stream<_, OrdIndexedZSet<(usize, Row), Vec<TypedValue>, isize>>,
+                             Stream<_, OrdIndexedZSet<(usize, Row), (), isize>>,
                              Stream<_, OrdIndexedZSet<(usize, Row), Row, isize>>,
                              Stream<_, OrdIndexedZSet<(usize, usize), Rewrite, isize>>,
                         )| {
                             let iteration = iteration.delta0(child);
                             let edb_index = fact_index.delta0(child);
-                            let start = start.delta0(child);
+                            let empty_rewrites = empty_rewrites.delta0(child);
                             let end_for_grounding = end_for_grounding.delta0(child);
                             let unique_column_sets = unique_column_sets.delta0(child);
-                            let edb = facts_by_hashed_facts_and_symbol.delta0(child);
+                            let edb = fact_source.delta0(child);
 
-                            let current_rewrites = rewrites.join_index(
+                            let previous_propagated_rewrites = rewrites.join_index(
                                 &iteration,
-                                |key, rewrite, current_body_atom| {
-                                    let fresh_atom = rewrite.apply(&current_body_atom.1);
+                                |key, rewrite, (current_body_atom_symbol, current_body_atom)| {
+                                    let fresh_atom = rewrite.apply(&current_body_atom);
 
                                     if !is_ground(&fresh_atom) {
+                                        let encoded_atom = encode_atom(&fresh_atom);
+
                                         return Some((
-                                            (current_body_atom.0, compute_atom_hash(fresh_atom.iter())),
-                                            (*key, fresh_atom, rewrite.clone()),
+                                            (*current_body_atom_symbol, project_encoded_atom(&encoded_atom)),
+                                            (*key, encoded_atom, rewrite.clone()),
                                         ));
                                     }
 
-                                    return None;
+                                    None
                                 },
                             );
 
-                            let product_setup =
-                                idb_index.join_index(&current_rewrites, |(relation_symbol, _projection), fact_hash, ((rule_id, atom_position), fresh_atom, rewrite)| {
-
-                                    return Some(((*relation_symbol, *fact_hash), ((*rule_id, *atom_position + 1), fresh_atom.clone(), rewrite.clone())));
+                            let rewrite_product_setup =
+                                idb_index.join_index(&previous_propagated_rewrites, |(relation_symbol, _projected_fresh_atom), encoded_fact, ((rule_id, atom_position), encoded_fresh_atom, rewrite)| {
+                                    return Some(((*relation_symbol, *encoded_fact), ((*rule_id, *atom_position + 1), *encoded_fresh_atom, rewrite.clone())));
                                 });
 
-                            let cartesian_product = product_setup
-                                .join_index(&idb, |(_relation_symbol, _fact_hash), ((rule_id, atom_position), fresh_atom, rewrite), fact| {
-                                    let unification = unify(fresh_atom, fact).unwrap();
+                            let rewrite_product = rewrite_product_setup
+                                .join_index(&idb, |(_relation_symbol, encoded_fact), ((rule_id, atom_position), encoded_fresh_atom, rewrite), _| {
+                                    let unification = unify_encoded_atom(*encoded_fresh_atom, *encoded_fact).unwrap();
                                     let mut extended_sub = rewrite.clone();
                                     extended_sub.extend(unification);
 
@@ -302,23 +288,31 @@ impl ChibiRuntime {
                                 });
 
                             let fresh_facts = end_for_grounding
-                                .join_index(&cartesian_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
+                                .join_index(&rewrite_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
                                     let fresh_fact = final_substitution.ground(head_atom);
+                                    let fresh_encoded_fact = encode_fact(&fresh_fact);
+                                    assert_eq!(decode_fact(fresh_encoded_fact), fresh_fact);
 
-                                    Some((*head_atom_symbol, fresh_fact))
+                                    Some((*head_atom_symbol, fresh_encoded_fact))
                                 });
 
-                            let fresh_projections = fresh_facts
+                            let fresh_indexed_facts = fresh_facts
                                 .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
-                                    Some(((*relation_symbol, compute_projection_hash(fact, column_set)), compute_fact_hash(fact)))
+                                    Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
                                 });
 
-                            Ok((edb.plus(&fresh_facts.map_index(|(symbol, fresh_fact)| ((*symbol, compute_fact_hash(fresh_fact)), fresh_fact.clone()))), edb_index.plus(&fresh_projections), start.plus(&cartesian_product)))
+                            let idb_out = edb.plus(&fresh_facts).map_index(|(k,v)| ((*k, *v), ()));
+                            let idb_index_out = edb_index.plus(&fresh_indexed_facts);
+                            let rewrites_out = empty_rewrites.plus(&rewrite_product);
+
+                            Ok((idb_out, idb_index_out, rewrites_out))
                         },
                     )
                     .unwrap();
 
-                Ok((((inferences.map_index(|((symbol, _), fresh_fact)| ((*symbol, fresh_fact.clone()))).output()), fact_sink), rule_sink))
+                let inferences_out = inferences.map_index(|((symbol, fresh_fact), _)| (*symbol, *fresh_fact)).output();
+
+                Ok(((inferences_out, fact_sink), rule_sink))
             })
             .unwrap();
 
@@ -364,7 +358,7 @@ impl ChibiRuntime {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::datalog::ChibiRuntime;
+    use crate::engine::datalog::DyreRuntime;
     use datalog_rule_macro::program;
     use datalog_syntax::*;
     use std::collections::HashSet;
@@ -376,7 +370,7 @@ mod tests {
             tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
         };
 
-        let mut runtime = ChibiRuntime::new(tc_program);
+        let mut runtime = DyreRuntime::new(tc_program);
         vec![
             vec![1, 2],
             vec![2, 3],
@@ -487,7 +481,7 @@ mod tests {
             tc(?x, ?z) <- [tc(?x, ?y), tc(?y, ?z)],
         };
 
-        let mut runtime = ChibiRuntime::new(tc_program);
+        let mut runtime = DyreRuntime::new(tc_program);
         vec![
             vec![1, 2],
             // this extra atom will help with testing that rederivation works
