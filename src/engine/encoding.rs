@@ -1,7 +1,6 @@
-use datalog_syntax::AnonymousGroundAtom;
-use crate::engine::rewrite::{InternedTerm, Rewrite};
+use datalog_syntax::{AnonymousGroundAtom, TypedValue};
+use crate::engine::rewrite::{Domain, InternedTerm, Rewrite, Substitution};
 
-// 0 is a canary value for terms!
 pub type EncodedAtom = u64;
 const TERM_COUNT_BITS: u64 = 2;
 const TERM_COUNT_MASK: u64 = TERM_COUNT_BITS + 1;
@@ -132,6 +131,107 @@ pub fn decode_fact(fact: EncodedAtom) -> AnonymousGroundAtom {
     decoded_fact
 }
 
+pub type EncodedRewrite = u128;
+const VARIABLE_BITS: u128 = 3; // Only up to 5 variables per rewrite. Variables can only ever be valued from 1 to 7
+const SUBSTITUTION_COUNT_BITS: u128 = 3;
+const SUBSTITUTION_COUNT_MASK: u128 = 7;
+pub fn unify_encoded_atom_to_encoded_rewrite(left_atom: EncodedAtom, right_fact: EncodedAtom) -> Option<EncodedRewrite> {
+    let left_len = TERM_COUNT_MASK & left_atom;
+    let right_len = TERM_COUNT_MASK & right_fact;
+    if left_len != right_len {
+        return None;
+    }
+    let mut rewrite = 0u128;
+    for idx in 0..(left_len as usize) {
+        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * (idx as u64));
+        let left_term = (left_atom >> shift_amount) & TERM_KIND_AND_VALUE_MASK;
+        let right_constant = (right_fact >> shift_amount) & TERM_KIND_AND_VALUE_MASK;
+
+        let is_left_term_var = left_term & 1 == 1;
+        if is_left_term_var {
+            let left_variable_name = (left_term >> 1) as u128;
+            let right_constant_value = (right_constant >> 1) as u128;
+
+            let variable_shift_amount = SUBSTITUTION_COUNT_BITS + (VARIABLE_BITS + ((TERM_VALUE_BITS - 1) as u128)) * idx as u128;
+            let constant_shift_amount = variable_shift_amount + VARIABLE_BITS;
+
+            rewrite |= left_variable_name << variable_shift_amount;
+            rewrite |= right_constant_value << constant_shift_amount;
+            let current_sub_count_plus_one = (rewrite & SUBSTITUTION_COUNT_MASK) + 1;
+            rewrite >>= SUBSTITUTION_COUNT_BITS;
+            rewrite <<= SUBSTITUTION_COUNT_BITS;
+            rewrite |= current_sub_count_plus_one;
+
+            continue;
+        }
+
+        if left_term != right_constant {
+            return None;
+        }
+    }
+
+
+    Some(rewrite)
+}
+
+pub fn add_substitution(rewrite: &mut EncodedRewrite, substitution: Substitution) {
+    let current_sub_count = (*rewrite & SUBSTITUTION_COUNT_MASK) + 1;
+    let variable_shift_amount = SUBSTITUTION_COUNT_BITS + (VARIABLE_BITS + ((TERM_VALUE_BITS - 1) as u128)) * current_sub_count;
+    let constant_shift_amount = variable_shift_amount + VARIABLE_BITS;
+
+    *rewrite |= (substitution.0 as u128) << variable_shift_amount;
+    *rewrite |= (substitution.1 as u128) << constant_shift_amount;
+
+    let current_sub_count_plus_one = (*rewrite & SUBSTITUTION_COUNT_MASK) + 1;
+
+    *rewrite >>= SUBSTITUTION_COUNT_BITS;
+    *rewrite <<= SUBSTITUTION_COUNT_BITS;
+    *rewrite |= current_sub_count_plus_one;
+}
+
+pub fn get_from_encoded_rewrite(rewrite: &EncodedRewrite, variable: &Domain) -> Option<TypedValue> {
+    let current_sub_count = (*rewrite & SUBSTITUTION_COUNT_MASK) + 1;
+    for idx in 0..current_sub_count {
+        let variable_start = SUBSTITUTION_COUNT_BITS + (VARIABLE_BITS + ((TERM_VALUE_BITS - 1) as u128)) * idx;
+        let variable_end = variable_start + VARIABLE_BITS;
+
+        let range_start = (1 << (variable_start)) - 1;
+        let range_end = (1 << (variable_end)) - 1;
+        let variable_mask = range_start ^ range_end;
+        let variable_value = ((rewrite & variable_mask) << range_start) as Domain;
+
+        if variable_value == *variable {
+            let constant_range_start = (1 << (range_end)) - 1;
+            let constant_range_end = (1 << (range_end + (TERM_VALUE_BITS - 1) as u128)) - 1;
+            let constant_mask = constant_range_start ^ constant_range_end;
+            let constant_value = ((rewrite & constant_mask) << constant_range_start) as TypedValue;
+
+            return Some(constant_value)
+        }
+    }
+
+    None
+}
+
+pub fn apply_rewrite(rewrite: &EncodedRewrite, encoded_atom: &EncodedAtom) -> EncodedAtom {
+    let mut encoded_atom_copy = *encoded_atom;
+    let len = TERM_COUNT_MASK & encoded_atom;
+    for idx in 0..len {
+        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * idx);
+        let term = (encoded_atom >> shift_amount) & TERM_KIND_AND_VALUE_MASK;
+        let is_term_var = term & 1 == 1;
+        if is_term_var {
+            if let Some(constant) = get_from_encoded_rewrite(rewrite, term) {
+                let constant_mask = (constant << shift_amount) << 1;
+                
+            }
+        }
+
+    }
+
+    encoded_atom_copy
+}
+
 #[cfg(test)]
 mod tests {
     use crate::engine::encoding::{decode_fact, encode_atom, encode_fact, project_encoded_atom, project_encoded_fact, unify_encoded_atom};
@@ -168,6 +268,18 @@ mod tests {
     fn test_unify() {
         let atom = vec![InternedTerm::Constant(1usize), InternedTerm::Variable(3usize), InternedTerm::Variable(4usize)];
         let fact = vec![1usize, 2usize, 3usize];
+        let mut expected_rewrite = Rewrite::default();
+        expected_rewrite.insert((3, 2));
+        expected_rewrite.insert((4, 3));
+
+        assert_eq!(expected_rewrite, unify_encoded_atom(encode_atom(&atom), encode_fact(&fact)).unwrap())
+    }
+
+    #[test]
+    fn test_unify_encoded_atom_to_encoded_rewrite() {
+        let atom = vec![InternedTerm::Constant(1usize), InternedTerm::Variable(3usize), InternedTerm::Variable(4usize)];
+        let fact = vec![1usize, 2usize, 3usize];
+
         let mut expected_rewrite = Rewrite::default();
         expected_rewrite.insert((3, 2));
         expected_rewrite.insert((4, 3));

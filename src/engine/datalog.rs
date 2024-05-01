@@ -1,17 +1,13 @@
-use crate::engine::rewrite::{reliably_intern_rule, unify, InternedTerm, Rewrite};
+use crate::engine::rewrite::{reliably_intern_rule, InternedTerm, Rewrite};
 use crate::engine::storage::RelationStorage;
 use crate::evaluation::query::pattern_match;
-use ahash::AHasher;
 use datalog_syntax::*;
 use dbsp::operator::FilterMap;
-use dbsp::{
-    CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OutputHandle, Runtime, Stream,
-};
+use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use lasso::{Key, Rodeo, Spur};
 use std::collections::HashSet;
 use std::fmt;
-use std::hash::{Hash, Hasher};
-use dbsp::circuit::WithClock;
+use ascent::internal::Instant;
 use crate::engine::encoding::{decode_fact, encode_atom, encode_fact, EncodedAtom, project_encoded_atom, project_encoded_fact, unify_encoded_atom};
 
 pub type EncodedFactWithRelationId = (usize, EncodedAtom);
@@ -25,48 +21,12 @@ pub struct DyreRuntime {
     dbsp_runtime: DBSPHandle,
     fact_sink: CollectionHandle<usize, (u64, Weight)>,
     rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
-    fact_source: OutputHandle<OrdIndexedZSet<usize, EncodedAtom, Weight>>,
+    fact_source: OutputHandle<OrdZSet<(usize, EncodedAtom), Weight>>,
     materialisation: RelationStorage,
     safe: bool,
 }
 
 type Row = u64;
-
-fn compute_atom_hash<'a>(key: impl Iterator<Item=&'a InternedTerm>) -> Row {
-    let mut hasher = AHasher::default();
-
-    key.for_each(|interned_term| {
-        match interned_term {
-            InternedTerm::Variable(_) => None::<TypedValue>.hash(&mut hasher),
-            InternedTerm::Constant(inner) => Some(inner).hash(&mut hasher)
-        }
-    });
-
-    hasher.finish() as Row
-}
-fn compute_fact_hash(fact: &[TypedValue]) -> Row {
-    let mut hasher = AHasher::default();
-
-    fact.iter().for_each(|constant| {
-        constant.hash(&mut hasher)
-    });
-
-    hasher.finish() as Row
-}
-
-fn compute_projection_hash(fact: &[TypedValue], column_set: &Vec<usize>) -> Row {
-    let mut hasher = AHasher::default();
-
-    fact.iter().enumerate().for_each(|(idx, constant)| {
-        if column_set.contains(&idx) {
-            Some(constant).hash(&mut hasher);
-        } else {
-            None::<TypedValue>.hash(&mut hasher);
-        }
-    });
-
-    hasher.finish() as Row
-}
 
 pub fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(usize, Vec<usize>)> {
     let mut out = vec![];
@@ -189,12 +149,14 @@ impl DyreRuntime {
             .filter(|fact| pattern_match(query, fact)));
     }
     pub fn poll(&mut self) {
+        let now = Instant::now();
         self.dbsp_runtime.step().unwrap();
+        println!("step: {} milis", now.elapsed().as_millis());
 
         let consolidated = self.fact_source.consolidate();
         consolidated
             .iter()
-            .for_each(|(relation_identifier, fresh_fact, weight)| {
+            .for_each(|((relation_identifier, fresh_fact), (), weight)| {
                 let spur = Spur::try_from_usize(relation_identifier).unwrap();
                 let sym = self.interner.resolve(&spur);
                 let decoded_fact = decode_fact(fresh_fact);
@@ -240,11 +202,10 @@ impl DyreRuntime {
                         Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
                     });
 
-                let (inferences, _, _) = circuit
+                let (indexed_inferences, _) = circuit
                     .recursive(
                         |child,
-                        (idb, idb_index, rewrites): (
-                             Stream<_, OrdIndexedZSet<(usize, Row), (), isize>>,
+                        (idb_index, rewrites): (
                              Stream<_, OrdIndexedZSet<(usize, Row), Row, isize>>,
                              Stream<_, OrdIndexedZSet<(usize, usize), Rewrite, isize>>,
                         )| {
@@ -253,7 +214,6 @@ impl DyreRuntime {
                             let empty_rewrites = empty_rewrites.delta0(child);
                             let end_for_grounding = end_for_grounding.delta0(child);
                             let unique_column_sets = unique_column_sets.delta0(child);
-                            let edb = fact_source.delta0(child);
 
                             let previous_propagated_rewrites = rewrites.join_index(
                                 &iteration,
@@ -273,18 +233,13 @@ impl DyreRuntime {
                                 },
                             );
 
-                            let rewrite_product_setup =
-                                idb_index.join_index(&previous_propagated_rewrites, |(relation_symbol, _projected_fresh_atom), encoded_fact, ((rule_id, atom_position), encoded_fresh_atom, rewrite)| {
-                                    return Some(((*relation_symbol, *encoded_fact), ((*rule_id, *atom_position + 1), *encoded_fresh_atom, rewrite.clone())));
-                                });
-
-                            let rewrite_product = rewrite_product_setup
-                                .join_index(&idb, |(_relation_symbol, encoded_fact), ((rule_id, atom_position), encoded_fresh_atom, rewrite), _| {
+                            let rewrite_product =
+                                idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, ((rule_id, atom_position), encoded_fresh_atom, rewrite)| {
                                     let unification = unify_encoded_atom(*encoded_fresh_atom, *encoded_fact).unwrap();
                                     let mut extended_sub = rewrite.clone();
                                     extended_sub.extend(unification);
 
-                                    Some(((*rule_id, *atom_position), extended_sub))
+                                    Some(((*rule_id, *atom_position + 1), extended_sub))
                                 });
 
                             let fresh_facts = end_for_grounding
@@ -301,16 +256,15 @@ impl DyreRuntime {
                                     Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
                                 });
 
-                            let idb_out = edb.plus(&fresh_facts).map_index(|(k,v)| ((*k, *v), ()));
                             let idb_index_out = edb_index.plus(&fresh_indexed_facts);
                             let rewrites_out = empty_rewrites.plus(&rewrite_product);
 
-                            Ok((idb_out, idb_index_out, rewrites_out))
+                            Ok((idb_index_out, rewrites_out))
                         },
                     )
                     .unwrap();
 
-                let inferences_out = inferences.map_index(|((symbol, fresh_fact), _)| (*symbol, *fresh_fact)).output();
+                let inferences_out = indexed_inferences.map(|((symbol, _fact_projection), fresh_fact)| (*symbol, *fresh_fact)).output();
 
                 Ok(((inferences_out, fact_sink), rule_sink))
             })
