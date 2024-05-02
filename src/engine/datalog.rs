@@ -8,7 +8,7 @@ use lasso::{Key, Rodeo, Spur};
 use std::collections::HashSet;
 use std::fmt;
 use ascent::internal::Instant;
-use crate::engine::encoding::{decode_fact, encode_atom, encode_fact, EncodedAtom, project_encoded_atom, project_encoded_fact, unify_encoded_atom};
+use crate::engine::encoding::{apply_rewrite, decode_fact, encode_atom, encode_fact, EncodedAtom, EncodedRewrite, is_encoded_atom_ground, merge_right_rewrite_into_left, project_encoded_atom, project_encoded_fact, unify_encoded_atom, unify_encoded_atom_with_encoded_rewrite};
 
 pub type EncodedFactWithRelationId = (usize, EncodedAtom);
 pub type EncodedAtomWithRelationId = (usize, EncodedAtom);
@@ -187,15 +187,15 @@ impl DyreRuntime {
                     .flat_map_index(compute_unique_column_sets)
                     .distinct();
                 let rules_by_id =
-                    rule_source.index_with(|(id, head, body)| (*id, (head.clone(), body.clone())));
+                    rule_source.index_with(|(id, head, body)| (*id, ((head.0, encode_atom(&head.1)), body.clone())));
                 let iteration = rules_by_id.flat_map_index(|(rule_id, (_head, body))| {
                     body.iter()
                         .enumerate()
-                        .map(move |(atom_position, atom)| ((*rule_id, atom_position), atom.clone()))
+                        .map(move |(atom_position, atom)| ((*rule_id, atom_position), (atom.0, encode_atom(&atom.1))))
                         .collect::<Vec<_>>()
                 });
-                let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), head.clone()));
-                let empty_rewrites = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), Rewrite::default()));
+                let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), (head.0, encode_atom(&head.1))));
+                let empty_rewrites = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), EncodedRewrite::default()));
 
                 let fact_index = fact_source
                     .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
@@ -207,7 +207,7 @@ impl DyreRuntime {
                         |child,
                         (idb_index, rewrites): (
                              Stream<_, OrdIndexedZSet<(usize, Row), Row, isize>>,
-                             Stream<_, OrdIndexedZSet<(usize, usize), Rewrite, isize>>,
+                             Stream<_, OrdIndexedZSet<(usize, usize), EncodedRewrite, isize>>,
                         )| {
                             let iteration = iteration.delta0(child);
                             let edb_index = fact_index.delta0(child);
@@ -218,10 +218,10 @@ impl DyreRuntime {
                             let previous_propagated_rewrites = rewrites.join_index(
                                 &iteration,
                                 |key, rewrite, (current_body_atom_symbol, current_body_atom)| {
-                                    let fresh_atom = rewrite.apply(&current_body_atom);
+                                    let fresh_atom = apply_rewrite(&rewrite, &current_body_atom);
 
-                                    if !is_ground(&fresh_atom) {
-                                        let encoded_atom = encode_atom(&fresh_atom);
+                                    if !is_encoded_atom_ground(&fresh_atom) {
+                                        let encoded_atom = fresh_atom;
 
                                         return Some((
                                             (*current_body_atom_symbol, project_encoded_atom(&encoded_atom)),
@@ -235,19 +235,15 @@ impl DyreRuntime {
 
                             let rewrite_product =
                                 idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, ((rule_id, atom_position), encoded_fresh_atom, rewrite)| {
-                                    let unification = unify_encoded_atom(*encoded_fresh_atom, *encoded_fact).unwrap();
-                                    let mut extended_sub = rewrite.clone();
-                                    extended_sub.extend(unification);
+                                    let unification = unify_encoded_atom_with_encoded_rewrite(*encoded_fresh_atom, *encoded_fact).unwrap();
+                                    let extended_sub = merge_right_rewrite_into_left(*rewrite, unification);
 
                                     Some(((*rule_id, *atom_position + 1), extended_sub))
                                 });
 
                             let fresh_facts = end_for_grounding
                                 .join_index(&rewrite_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
-                                    let fresh_fact = final_substitution.ground(head_atom);
-                                    let fresh_encoded_fact = encode_fact(&fresh_fact);
-                                    assert_eq!(decode_fact(fresh_encoded_fact), fresh_fact);
-
+                                    let fresh_encoded_fact = apply_rewrite(&final_substitution, head_atom);
                                     Some((*head_atom_symbol, fresh_encoded_fact))
                                 });
 

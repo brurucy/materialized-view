@@ -1,4 +1,3 @@
-use ahash::{HashMap, HashSet};
 use datalog_syntax::{AnonymousGroundAtom, Atom, Rule, Term, TypedValue};
 use lasso::{Key, Rodeo};
 use rkyv::{Archive, Deserialize, Serialize};
@@ -23,25 +22,6 @@ pub struct InternedAtom {
 pub struct InternedRule {
     pub head: InternedAtom,
     pub body: Vec<InternedAtom>,
-}
-
-pub fn intern_atom<'a>(atom: Atom, relation_to_id: &HashMap<String, usize>) -> InternedAtom {
-    let interned_symbol = relation_to_id.get(&atom.symbol).unwrap();
-    let interned_terms = atom
-        .terms
-        .into_iter()
-        .map(|term| match term {
-            Term::Variable(variable_name) => {
-                InternedTerm::Variable(*relation_to_id.get(&variable_name).unwrap())
-            }
-            Term::Constant(constant) => InternedTerm::Constant(constant),
-        })
-        .collect();
-
-    return InternedAtom {
-        symbol: *interned_symbol,
-        terms: interned_terms,
-    };
 }
 
 pub fn reliably_intern_atom(atom: &Atom, interner: &mut Rodeo) -> InternedAtom {
@@ -72,43 +52,6 @@ pub fn reliably_intern_rule(rule: Rule, interner: &mut Rodeo) -> InternedRule {
             .map(|atom| reliably_intern_atom(atom, interner))
             .collect(),
     }
-}
-
-pub fn intern_rule(rule: Rule) -> (InternedRule, HashMap<usize, String>) {
-    let symbols: HashSet<String> = vec![rule.head.symbol.clone()]
-        .into_iter()
-        .chain(rule.body.clone().into_iter().map(|atom| atom.symbol))
-        .collect();
-
-    let variable_names: HashSet<String> = vec![rule.clone().head.terms]
-        .into_iter()
-        .chain(rule.body.clone().into_iter().map(|atom| atom.terms))
-        .flat_map(|terms| terms)
-        .filter_map(|term| match term {
-            Term::Variable(name) => Some(name),
-            Term::Constant(_) => None,
-        })
-        .collect();
-
-    let all_names: Vec<_> = symbols.union(&variable_names).cloned().collect();
-    let id_to_relation: HashMap<usize, String> = all_names.into_iter().enumerate().collect();
-    let relation_to_id: HashMap<String, usize> = id_to_relation
-        .clone()
-        .into_iter()
-        .map(|(idx, relation)| (relation, idx))
-        .collect();
-
-    return (
-        InternedRule {
-            head: intern_atom(rule.head, &relation_to_id),
-            body: rule
-                .body
-                .into_iter()
-                .map(|atom| intern_atom(atom, &relation_to_id))
-                .collect(),
-        },
-        id_to_relation,
-    );
 }
 
 pub type Domain = usize;
@@ -187,34 +130,4 @@ impl Rewrite {
             })
             .collect()
     }
-}
-
-pub fn unify(left: &Vec<InternedTerm>, right: &AnonymousGroundAtom) -> Option<Rewrite> {
-    // If atoms don't have the same term length, they can't be unified
-    if left.len() != right.len() {
-        return None;
-    }
-
-    let mut rewrite: Rewrite = Default::default();
-
-    for (left_term, right_term) in left.iter().zip(right.iter()) {
-        match left_term {
-            // If both terms are constants, and they don't match, unification fails
-            InternedTerm::Constant(l_const) if l_const != right_term => return None,
-            // If left term is a variable, substitute it with the right constant
-            InternedTerm::Variable(l_var) => {
-                // If this variable was already assigned a different constant, unification fails
-                if let Some(existing_const) = rewrite.get(*l_var) {
-                    if existing_const != right_term {
-                        return None;
-                    }
-                } else {
-                    rewrite.insert((*l_var, right_term.clone()));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Some(rewrite)
 }

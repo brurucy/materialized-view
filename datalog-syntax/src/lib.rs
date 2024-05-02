@@ -1,21 +1,6 @@
-use ordered_float::OrderedFloat;
-use rkyv::{Archive, Deserialize, Serialize};
-use size_of::SizeOf;
 use std::fmt::{Debug, Formatter};
 
 pub type TypedValue = usize;
-
-/*impl From<bool> for TypedValue {
-    fn from(value: bool) -> Self {
-        TypedValue::Bool(value)
-    }
-}
-*/
-/*impl From<f64> for TypedValue {
-    fn from(value: f64) -> Self {
-        TypedValue::Float(OrderedFloat::from(value))
-    }
-}*/
 
 pub type Variable = String;
 
