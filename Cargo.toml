@@ -11,8 +11,6 @@ datalog-syntax = { path = "datalog-syntax" }
 datalog_rule_macro = { path = "datalog_rule_macro" }
 crepe = "0.1.8"
 ascent = "*"
-ahash="0.8.6"
-dashmap="5.5.3"
 lasso = { version = "0.7.2", features = ["ahash"] }
 regex = "1.0"
 indexmap = { version = "2.1.0" }

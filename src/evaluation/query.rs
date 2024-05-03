@@ -5,7 +5,7 @@ pub fn pattern_match(query: &Query, fact: &AnonymousGroundAtom) -> bool {
         if let Some(matcher) = query.matchers.get(index) {
             return match (matcher, term) {
                 (Matcher::Any, _) => true,
-                (Matcher::Constant(target), term) => target == term,
+                (Matcher::Constant(target), term) => *target == *term,
             };
         }
 

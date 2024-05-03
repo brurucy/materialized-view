@@ -1,11 +1,11 @@
 use datalog_syntax::{AnonymousGroundAtom, TypedValue};
-use crate::engine::rewrite::{Domain, InternedTerm, Rewrite, Substitution};
+use crate::engine::interning::{Domain, InternedTerm, Substitution};
 
 pub type EncodedAtom = u64;
 const TERM_COUNT_BITS: u64 = 2;
 const TERM_COUNT_MASK: u64 = TERM_COUNT_BITS + 1;
 const TERM_VALUE_BITS: u64 = 20;
-const TERM_VALUE_MASK: u64 = (1 << 19) - 1;
+const TERM_VALUE_MASK: u64 = (1 << (TERM_VALUE_BITS - 1)) - 1;
 pub fn encode_fact(value: &AnonymousGroundAtom) -> EncodedAtom {
     let len = value.len() as u64;
     let mut encoded_fact = len;
@@ -19,7 +19,6 @@ pub fn encode_fact(value: &AnonymousGroundAtom) -> EncodedAtom {
 
     encoded_fact
 }
-
 pub fn encode_atom(value: &Vec<InternedTerm>) -> EncodedAtom {
     let mut encoded_atom = 0;
     let len = value.len() as u64;
@@ -43,34 +42,6 @@ pub fn encode_atom(value: &Vec<InternedTerm>) -> EncodedAtom {
     encoded_atom
 }
 const TERM_KIND_AND_VALUE_MASK: u64 = (1 << 20) - 1;
-pub fn unify_encoded_atom(left_atom: EncodedAtom, right_fact: EncodedAtom) -> Option<Rewrite> {
-    let left_len = TERM_COUNT_MASK & left_atom;
-    let right_len = TERM_COUNT_MASK & right_fact;
-    if left_len != right_len {
-        return None;
-    }
-
-    let mut rewrite: Rewrite = Default::default();
-    for idx in 0..(left_len as usize) {
-        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * (idx as u64));
-        let left_term = (left_atom >> shift_amount) & TERM_KIND_AND_VALUE_MASK;
-        let right_constant = (right_fact >> shift_amount) & TERM_KIND_AND_VALUE_MASK;
-
-        let is_left_term_var = left_term & 1 == 1;
-        if is_left_term_var {
-            rewrite.insert(((left_term >> 1) as usize, (right_constant >> 1) as usize));
-
-            continue;
-        }
-
-        if left_term != right_constant {
-            return None;
-        }
-    }
-
-    Some(rewrite)
-}
-
 pub fn project_encoded_fact(atom: &EncodedAtom, column_set: &Vec<usize>) -> EncodedAtom {
     let len = TERM_COUNT_MASK & atom;
     let mut projection_mask = 0;
@@ -272,8 +243,8 @@ pub fn is_encoded_atom_ground(atom: &EncodedAtom) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::encoding::{add_substitution, apply_rewrite, decode_fact, encode_atom, encode_fact, EncodedRewrite, get_from_encoded_rewrite, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact, unify_encoded_atom, unify_encoded_atom_with_encoded_rewrite};
-    use crate::engine::rewrite::{InternedTerm, Rewrite};
+    use crate::engine::encoding::{add_substitution, apply_rewrite, decode_fact, encode_atom, encode_fact, EncodedRewrite, get_from_encoded_rewrite, is_encoded_atom_ground, merge_right_rewrite_into_left, project_encoded_atom, project_encoded_fact, unify_encoded_atom_with_encoded_rewrite};
+    use crate::engine::interning::InternedTerm;
 
     #[test]
     fn test_encode_fact() {
@@ -300,29 +271,6 @@ mod tests {
         let expected_encoded_atom = expected_encoded_length | expected_encoded_first_term | expected_encoded_second_term | expected_encoded_third_term;
 
         assert_eq!(expected_encoded_atom, encode_atom(&atom));
-    }
-
-    #[test]
-    fn test_unify() {
-        let atom = vec![InternedTerm::Constant(1usize), InternedTerm::Variable(3usize), InternedTerm::Variable(4usize)];
-        let fact = vec![1usize, 2usize, 3usize];
-        let mut expected_rewrite = Rewrite::default();
-        expected_rewrite.insert((3, 2));
-        expected_rewrite.insert((4, 3));
-
-        assert_eq!(expected_rewrite, unify_encoded_atom(encode_atom(&atom), encode_fact(&fact)).unwrap())
-    }
-
-    #[test]
-    fn test_unify_encoded_atom_to_encoded_rewrite() {
-        let atom = vec![InternedTerm::Constant(1usize), InternedTerm::Variable(3usize), InternedTerm::Variable(4usize)];
-        let fact = vec![1usize, 2usize, 3usize];
-
-        let mut expected_rewrite = Rewrite::default();
-        expected_rewrite.insert((3, 2));
-        expected_rewrite.insert((4, 3));
-
-        assert_eq!(expected_rewrite, unify_encoded_atom(encode_atom(&atom), encode_fact(&fact)).unwrap())
     }
 
     #[test]
@@ -392,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unification_failure() {
+    fn test_unify_encoded_atom_with_encoded_rewrite() {
         let encoded_atom_0 = encode_atom(&vec![InternedTerm::Constant(2), InternedTerm::Variable(1)]);
         let encoded_atom_1 = encode_atom(&vec![InternedTerm::Variable(1)]);
         let encoded_fact = encode_fact(&vec![2, 3]);
@@ -402,7 +350,7 @@ mod tests {
         let rewrite_1 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_0, encoded_fact);
         assert!(!rewrite_1.is_none());
         let application_0 = apply_rewrite(&rewrite_1.unwrap(), &encoded_atom_1);
-        println!("{:?}", decode_fact(application_0));
+
         assert_eq!(application_0, encode_atom(&vec![InternedTerm::Constant(3)]))
     }
 
@@ -419,5 +367,23 @@ mod tests {
 
         let encoded_fact = encode_fact(&vec![2, 3]);
         assert!(is_encoded_atom_ground(&encoded_fact));
+    }
+
+    #[test]
+    fn test_merge_right_rewrite_into_left() {
+        let encoded_atom_0 = encode_atom(&vec![InternedTerm::Constant(3), InternedTerm::Variable(4), InternedTerm::Variable(5)]);
+        let encoded_atom_1 = encode_atom(&vec![InternedTerm::Variable(6)]);
+
+        let encoded_fact_0 = encode_fact(&vec![3, 5, 7]);
+        let encoded_fact_1 = encode_fact(&vec![8]);
+
+        let rewrite_0 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_0, encoded_fact_0);
+        let rewrite_1 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_1, encoded_fact_1);
+
+        let encoded_atom_2 = encode_atom(&vec![InternedTerm::Variable(4), InternedTerm::Variable(5), InternedTerm::Variable(6)]);
+        let expected_encoded_fact = vec![5, 7, 8];
+
+        let rewrite_2 = merge_right_rewrite_into_left(rewrite_0.unwrap(), rewrite_1.unwrap());
+        assert_eq!(encode_fact(&expected_encoded_fact), apply_rewrite(&rewrite_2, &encoded_atom_2))
     }
 }

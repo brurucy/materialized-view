@@ -142,7 +142,7 @@ fn main() {
             let p = rodeo.get_or_intern_static(triple[1]).into_usize();
             let o = rodeo.get_or_intern_static(triple[2]).into_usize();
 
-            chibi_runtime.insert("RDF", vec![s.into(), p.into(), o.into()]);
+            chibi_runtime.insert("RDF", vec![s, p, o]);
             crepe_runtime.rdf.push(RDF(s, p, o));
             ascnt_runtime.RDF.push((s, p, o));
         }

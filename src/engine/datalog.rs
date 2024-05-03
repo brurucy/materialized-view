@@ -1,14 +1,14 @@
-use crate::engine::rewrite::{reliably_intern_rule, InternedTerm, Rewrite};
+use crate::engine::interning::{InternedTerm, reliably_intern_rule};
 use crate::engine::storage::RelationStorage;
 use crate::evaluation::query::pattern_match;
 use datalog_syntax::*;
 use dbsp::operator::FilterMap;
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
-use lasso::{Key, Rodeo, Spur};
+use lasso::{Rodeo, Spur};
 use std::collections::HashSet;
 use std::fmt;
 use ascent::internal::Instant;
-use crate::engine::encoding::{apply_rewrite, decode_fact, encode_atom, encode_fact, EncodedAtom, EncodedRewrite, is_encoded_atom_ground, merge_right_rewrite_into_left, project_encoded_atom, project_encoded_fact, unify_encoded_atom, unify_encoded_atom_with_encoded_rewrite};
+use crate::engine::encoding::{apply_rewrite, decode_fact, encode_atom, encode_fact, EncodedAtom, EncodedRewrite, is_encoded_atom_ground, merge_right_rewrite_into_left, project_encoded_atom, project_encoded_fact, unify_encoded_atom_with_encoded_rewrite};
 
 pub type EncodedFactWithRelationId = (usize, EncodedAtom);
 pub type EncodedAtomWithRelationId = (usize, EncodedAtom);
@@ -17,7 +17,6 @@ pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInt
 
 pub type Weight = isize;
 pub struct DyreRuntime {
-    interner: Rodeo,
     dbsp_runtime: DBSPHandle,
     fact_sink: CollectionHandle<usize, (u64, Weight)>,
     rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
@@ -25,8 +24,6 @@ pub struct DyreRuntime {
     materialisation: RelationStorage,
     safe: bool,
 }
-
-type Row = u64;
 
 pub fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(usize, Vec<usize>)> {
     let mut out = vec![];
@@ -75,53 +72,48 @@ impl<'a, T: fmt::Debug + 'a> fmt::Debug for SliceDisplay<'a, T> {
     }
 }
 
-fn is_ground(atom: &Vec<InternedTerm>) -> bool {
-    return !atom.iter().any(|term| match term {
-        InternedTerm::Variable(_) => true,
-        InternedTerm::Constant(_) => false,
-    });
-}
-
 impl DyreRuntime {
     pub fn insert(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
-        let interned_symbol = self.interner.get_or_intern(relation);
+        let interned_symbol = self.materialisation.inner.get_index_of(relation).unwrap();
+        let safe_ground_atom = ground_atom.into_iter().map(|term| term + 1).collect();
 
         self.fact_sink
-            .push(interned_symbol.into_usize(), (encode_fact(&ground_atom), 1));
+            .push(interned_symbol, (encode_fact(&safe_ground_atom), 1));
 
         self.safe = false;
 
-        self.materialisation.insert(relation, ground_atom)
+        self.materialisation.insert(relation, safe_ground_atom)
     }
     pub fn remove(&mut self, query: &Query) -> impl Iterator<Item = AnonymousGroundAtom> {
-        let mut removals = vec![];
         let query_symbol = query.symbol;
-        let interned_symbol = self.interner.get(query_symbol).unwrap();
+        let interned_symbol = self.materialisation.inner.get_index_of(query_symbol).unwrap();
 
         let removal_targets: Vec<_> = self
             .materialisation
             .get_relation(query_symbol)
             .iter()
-            .filter(|row| pattern_match(query, row))
-            .cloned()
+            .map(|fact|fact.iter().map(|term| term - 1).collect::<Vec<_>>())
+            .filter(|fact| pattern_match(query, fact))
             .collect();
 
-        removal_targets.iter().for_each(|candidate| {
-            self.fact_sink.push(interned_symbol.into_usize(), (encode_fact(candidate), -1));
-        });
+        removal_targets
+            .iter()
+            .map(|fact|fact.iter().map(|term| term + 1).collect::<Vec<_>>())
+            .for_each(|candidate| {
+                self.fact_sink.push(interned_symbol, (encode_fact(&candidate), -1));
+            });
 
         self.safe = false;
 
-        let mut relation = self.materialisation.inner.get_mut(query_symbol).unwrap();
-        removal_targets.iter().for_each(|candidate| {
-            relation.remove(candidate);
-        });
+        let relation = self.materialisation.inner.get_mut(query_symbol).unwrap();
+        removal_targets
+            .iter()
+            .map(|fact|fact.iter().map(|term| term + 1).collect::<Vec<_>>())
+            .for_each(|candidate| {
+                relation.remove(&candidate);
+            });
 
-        removal_targets.into_iter().for_each(|candidate| {
-            removals.push(candidate)
-        });
-
-        removals.into_iter()
+        removal_targets.into_iter()
     }
     pub fn contains(
         &self,
@@ -132,12 +124,13 @@ impl DyreRuntime {
             return Err("poll needed to obtain correct results".to_string());
         }
 
-        Ok(self.materialisation.contains(relation, ground_atom))
+        // F u ck
+        Ok(self.materialisation.contains(relation, &ground_atom.iter().map(|term| term + 1).collect()))
     }
     pub fn query<'a>(
         &'a self,
         query: &'a Query,
-    ) -> Result<impl Iterator<Item = &AnonymousGroundAtom> + 'a, String> {
+    ) -> Result<impl Iterator<Item = AnonymousGroundAtom> + 'a, String> {
         if !self.safe() {
             return Err("poll needed to obtain correct results".to_string());
         }
@@ -145,8 +138,8 @@ impl DyreRuntime {
             .materialisation
             .get_relation(query.symbol)
             .iter()
-            .map(|fact|fact)
-            .filter(|fact| pattern_match(query, fact)));
+            .map(|fact|fact.iter().map(|term| term - 1).collect::<Vec<_>>())
+            .filter(|fact| pattern_match(query, fact)))
     }
     pub fn poll(&mut self) {
         let now = Instant::now();
@@ -157,14 +150,13 @@ impl DyreRuntime {
         consolidated
             .iter()
             .for_each(|((relation_identifier, fresh_fact), (), weight)| {
-                let spur = Spur::try_from_usize(relation_identifier).unwrap();
-                let sym = self.interner.resolve(&spur);
+                let sym = self.materialisation.inner.get_index(relation_identifier).unwrap().0.clone();
                 let decoded_fact = decode_fact(fresh_fact);
 
                 if weight.signum() > 0 {
-                    self.materialisation.insert(sym, decoded_fact);
+                    self.materialisation.insert(&sym, decoded_fact);
                 } else {
-                    self.materialisation.remove(sym, &decoded_fact);
+                    self.materialisation.remove(&sym, &decoded_fact);
                 }
             });
 
@@ -172,10 +164,6 @@ impl DyreRuntime {
     }
 
     pub fn new(program: Program) -> Self {
-        let materialisation: RelationStorage = Default::default();
-        let mut relations = HashSet::new();
-
-        let mut interner: Rodeo<Spur> = Rodeo::new();
         let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
             Runtime::init_circuit(8, |circuit| {
                 let (rule_source, rule_sink) =
@@ -191,7 +179,7 @@ impl DyreRuntime {
                 let iteration = rules_by_id.flat_map_index(|(rule_id, (_head, body))| {
                     body.iter()
                         .enumerate()
-                        .map(move |(atom_position, atom)| ((*rule_id, atom_position), (atom.0, encode_atom(&atom.1))))
+                        .map(|(atom_position, atom)| ((*rule_id, atom_position), (atom.0, encode_atom(&atom.1))))
                         .collect::<Vec<_>>()
                 });
                 let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), (head.0, encode_atom(&head.1))));
@@ -206,7 +194,7 @@ impl DyreRuntime {
                     .recursive(
                         |child,
                         (idb_index, rewrites): (
-                             Stream<_, OrdIndexedZSet<(usize, Row), Row, isize>>,
+                             Stream<_, OrdIndexedZSet<(usize, EncodedAtom), EncodedAtom, isize>>,
                              Stream<_, OrdIndexedZSet<(usize, usize), EncodedRewrite, isize>>,
                         )| {
                             let iteration = iteration.delta0(child);
@@ -218,14 +206,12 @@ impl DyreRuntime {
                             let previous_propagated_rewrites = rewrites.join_index(
                                 &iteration,
                                 |key, rewrite, (current_body_atom_symbol, current_body_atom)| {
-                                    let fresh_atom = apply_rewrite(&rewrite, &current_body_atom);
+                                    let encoded_atom = apply_rewrite(&rewrite, &current_body_atom);
 
-                                    if !is_encoded_atom_ground(&fresh_atom) {
-                                        let encoded_atom = fresh_atom;
-
+                                    if !is_encoded_atom_ground(&encoded_atom) {
                                         return Some((
                                             (*current_body_atom_symbol, project_encoded_atom(&encoded_atom)),
-                                            (*key, encoded_atom, rewrite.clone()),
+                                            (*key, encoded_atom, *rewrite),
                                         ));
                                     }
 
@@ -236,14 +222,15 @@ impl DyreRuntime {
                             let rewrite_product =
                                 idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, ((rule_id, atom_position), encoded_fresh_atom, rewrite)| {
                                     let unification = unify_encoded_atom_with_encoded_rewrite(*encoded_fresh_atom, *encoded_fact).unwrap();
-                                    let extended_sub = merge_right_rewrite_into_left(*rewrite, unification);
+                                    let extended_rewrite = merge_right_rewrite_into_left(*rewrite, unification);
 
-                                    Some(((*rule_id, *atom_position + 1), extended_sub))
+                                    Some(((*rule_id, *atom_position + 1), extended_rewrite))
                                 });
 
                             let fresh_facts = end_for_grounding
                                 .join_index(&rewrite_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
                                     let fresh_encoded_fact = apply_rewrite(&final_substitution, head_atom);
+
                                     Some((*head_atom_symbol, fresh_encoded_fact))
                                 });
 
@@ -260,39 +247,41 @@ impl DyreRuntime {
                     )
                     .unwrap();
 
-                let inferences_out = indexed_inferences.map(|((symbol, _fact_projection), fresh_fact)| (*symbol, *fresh_fact)).output();
+                let inferences_out = indexed_inferences
+                    .map(|((symbol, _fact_projection), fresh_fact)| (*symbol, *fresh_fact))
+                    .output();
 
                 Ok(((inferences_out, fact_sink), rule_sink))
             })
             .unwrap();
 
+        let mut materialisation: RelationStorage = Default::default();
+        let mut relations = HashSet::new();
         program.inner.iter().for_each(|rule| {
+            let mut variable_interner: Rodeo<Spur> = Rodeo::new();
             relations.insert(&rule.head.symbol);
+            materialisation
+                .inner
+                .entry(rule.head.symbol.to_string())
+                .or_default();
 
             rule.body.iter().for_each(|body_atom| {
                 relations.insert(&body_atom.symbol);
+                materialisation
+                    .inner
+                    .entry(body_atom.symbol.to_string())
+                    .or_default();
             });
 
-            let interned_rule = reliably_intern_rule(rule.clone(), &mut interner);
+            let rule_id = rule.id;
+            let interned_rule = reliably_intern_rule(rule.clone(), &mut variable_interner, &materialisation);
             let flattened_head = (interned_rule.head.symbol, interned_rule.head.terms);
-            let flattened_body = interned_rule
-                .body
-                .into_iter()
-                .map(|atom| (atom.symbol, atom.terms))
-                .collect();
+            let flattened_body = interned_rule.body.into_iter().map(|atom| (atom.symbol, atom.terms)).collect();
 
-            rule_sink.push((rule.id, flattened_head, flattened_body), 1);
-        });
-
-        relations.iter().for_each(|relation_symbol| {
-            materialisation
-                .inner
-                .entry(relation_symbol.to_string())
-                .or_default();
+            rule_sink.push((rule_id, flattened_head, flattened_body), 1);
         });
 
         Self {
-            interner,
             dbsp_runtime,
             fact_source,
             fact_sink,
@@ -340,7 +329,7 @@ mod tests {
         let all_from_a = build_query!(tc(1, _));
 
         let actual_all: HashSet<AnonymousGroundAtom> =
-            runtime.query(&all).unwrap().cloned().collect();
+            runtime.query(&all).unwrap().collect();
         let expected_all: HashSet<AnonymousGroundAtom> = vec![
             vec![1, 2],
             vec![2, 3],
@@ -356,7 +345,7 @@ mod tests {
         assert_eq!(expected_all, actual_all);
 
         let actual_all_from_a: HashSet<AnonymousGroundAtom> =
-            runtime.query(&all_from_a).unwrap().cloned().collect();
+            runtime.query(&all_from_a).unwrap().collect();
         let expected_all_from_a: HashSet<AnonymousGroundAtom> = vec![
             vec![1, 2],
             vec![1, 3],
@@ -381,7 +370,7 @@ mod tests {
         assert!(runtime.safe());
 
         let actual_all_after_update: HashSet<AnonymousGroundAtom> =
-            runtime.query(&all).unwrap().cloned().collect();
+            runtime.query(&all).unwrap().collect();
         let expected_all_after_update: HashSet<AnonymousGroundAtom> = vec![
             vec![1, 2],
             vec![2, 3],
@@ -405,7 +394,6 @@ mod tests {
             .query(&all_from_a)
             .unwrap()
             .into_iter()
-            .cloned()
             .collect();
         let expected_all_from_a_after_update: HashSet<AnonymousGroundAtom> = vec![
             vec![1, 2],
@@ -448,7 +436,7 @@ mod tests {
         runtime.poll();
 
         let actual_all: HashSet<AnonymousGroundAtom> =
-            runtime.query(&all).unwrap().cloned().collect();
+            runtime.query(&all).unwrap().collect();
         let expected_all: HashSet<AnonymousGroundAtom> = vec![
             vec![1, 2],
             vec![1, 5],
@@ -472,7 +460,6 @@ mod tests {
             .query(&all_from_a)
             .unwrap()
             .into_iter()
-            .cloned()
             .collect();
         let expected_all_from_a: HashSet<_> = vec![
             vec![1, 2],
@@ -493,7 +480,7 @@ mod tests {
         assert!(runtime.safe());
 
         let actual_all_after_update: HashSet<AnonymousGroundAtom> =
-            runtime.query(&all).unwrap().cloned().collect();
+            runtime.query(&all).unwrap().collect();
         let expected_all_after_update: HashSet<AnonymousGroundAtom> = vec![
             vec![1, 2],
             vec![2, 3],
@@ -514,7 +501,6 @@ mod tests {
             .query(&all_from_a)
             .unwrap()
             .into_iter()
-            .cloned()
             .collect();
         let expected_all_from_a_after_update: HashSet<_> = vec![
             vec![1, 2],
