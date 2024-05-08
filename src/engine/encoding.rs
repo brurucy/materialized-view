@@ -208,7 +208,7 @@ pub fn unify_encoded_atom_with_encoded_rewrite(left_atom: EncodedAtom, right_fac
 
 pub fn merge_right_rewrite_into_left(left_rewrite: EncodedRewrite, right_rewrite: EncodedRewrite) -> EncodedRewrite {
     let right_len = SUBSTITUTION_COUNT_MASK & right_rewrite;
-    let mut rewrite = left_rewrite.clone();
+    let mut rewrite = left_rewrite;
     for idx in 0..right_len {
         let variable_start_position = SUBSTITUTION_COUNT_BITS + (VARIABLE_BITS + ((TERM_VALUE_BITS - 1) as u128)) * idx;
         let variable_end_position = variable_start_position + VARIABLE_BITS;

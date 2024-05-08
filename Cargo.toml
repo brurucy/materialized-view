@@ -17,6 +17,8 @@ indexmap = { version = "2.1.0" }
 rkyv = { version = "0.7.42", features = ["validation"] }
 dbsp = "0.2.0"
 size-of = "0.1.5"
+phf = { version = "0.11", features = ["macros"] }
+clap = "3.1.1"
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"

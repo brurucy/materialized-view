@@ -1,168 +1,99 @@
-use ascent::ascent;
-use chibi_datalog::engine::datalog::DyreRuntime;
-use crepe::crepe;
-use datalog_rule_macro::program;
-use datalog_syntax::*;
-use std::time::Instant;
-use lasso::{Key, Rodeo};
+use clap::{Arg, Command};
+use chibi_datalog::evaluation::benchmark_maker::into_benchmark;
+use chibi_datalog::evaluation::evaluator::{DyreOWL2RL, DyreRDFS, DyreTC, Evaluator};
+use chibi_datalog::evaluation::loader::{DataLoader, DenseEdges, LUBMOWL2RL, RDF, SparseEdges};
+use crate::Dataset::{Dense, OWL2RL, RDFS, Sparse};
 
-// TC benchmark
-/*crepe! {
-    @input
-    struct e(usize, usize);
-
-    @output
-    struct tc(usize, usize);
-
-    tc(x, y) <- e(x, y);
-    tc(x, z) <- e(x, y), tc(y, z);
-}
-
-ascent! {
-    relation e(usize, usize);
-    relation tc(usize, usize);
-
-    tc(x, y) <-- e(x, y);
-    tc(x, z) <-- e(x, y), tc(y, z);
+pub enum Dataset {
+    Dense,
+    Sparse,
+    RDFS,
+    OWL2RL
 }
 
 fn main() {
-    let program = program! {
-        tc(?x, ?y) <- [e(?x, ?y)],
-        tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)]
+    let matches = Command::new("dyre-bencher")
+        .version("0.1.0")
+        .about(
+            "Benches the time taken to reason",
+        )
+        .arg(
+            Arg::new("DATASET")
+                .help("dense, sparse, rdfs or owl2rl")
+                .required(true)
+                .index(1),
+        )
+        .get_matches();
+    let dataset: Dataset = match matches.value_of("DATASET").unwrap() {
+        "dense" => Dense,
+        "sparse" => Sparse,
+        "rdfs" => RDFS,
+        "owl2rl" => OWL2RL,
+        other => panic!("unknown dataset: {}", other),
     };
 
-    let mut chibi_runtime = DyreRuntime::new(program);
-    let mut ascnt_runtime = AscentProgram::default();
-    let mut crepe_runtime = Crepe::new();
+    let mat_mct_sizes = vec![0, 500, 750, 900, 990];
+    match dataset {
+        Dense => {
+            let dense_edges = DenseEdges::new().load();
 
-    let data = include_str!("../data/graph1000.txt");
-    data.lines().into_iter().for_each(|line| {
-        let triple: Vec<_> = line.split(" ").collect();
-        let from: usize = triple[0].parse().unwrap();
-        let to: usize = triple[1].parse().unwrap();
+            for mat_mct_size in &mat_mct_sizes {
+                let mut dyre_tc_dense = DyreTC::new();
+                let dense_updates = into_benchmark(dense_edges.clone(), *mat_mct_size);
+                for (idx, update) in dense_updates.iter().enumerate() {
+                    let elapsed_dense = dyre_tc_dense.update(&update);
+                    let op = if idx == 0 { "mat" } else if idx == 1 { "add" } else { "del" };
 
-        chibi_runtime.insert("e", vec![from.into(), to.into()]);
-        crepe_runtime.e.push(e(from, to));
-        ascnt_runtime.e.push((from, to));
-    });
+                    println!("Elapsed Dense {} - {} - {} ms - {} tuples", op, mat_mct_size, elapsed_dense, dyre_tc_dense.triple_count());
+                }
+                println!("\n")
+            }
+        },
+        Sparse => {
+            let sparse_edges = SparseEdges::new().load();
 
-    let now = Instant::now();
-    chibi_runtime.poll();
-    println!("chibi: {} milis", now.elapsed().as_millis());
-    let q = build_query!(tc(_, _));
-    let answer: Vec<_> = chibi_runtime.query(&q).unwrap().into_iter().collect();
-    println!("inferred tuples: {}", answer.len());
+            for mat_mct_size in &mat_mct_sizes {
+                let mut dyre_tc_sparse = DyreTC::new();
+                let sparse_updates = into_benchmark(sparse_edges.clone(), *mat_mct_size);
+                for (idx, update) in sparse_updates.iter().enumerate() {
+                    let elapsed_sparse = dyre_tc_sparse.update(&update);
+                    let op = if idx == 0 { "mat" } else if idx == 1 { "add" } else { "del" };
 
-    let now = Instant::now();
-    let teecee = crepe_runtime.run();
-    println!("crepe: {} milis", now.elapsed().as_millis());
-    println!("inferred tuples: {}", teecee.0.len());
+                    println!("Elapsed Sparse {} - {} - {} ms - {} tuples", op, mat_mct_size, elapsed_sparse, dyre_tc_sparse.triple_count());
+                }
+                println!("\n")
+            }
 
-    let now = Instant::now();
-    ascnt_runtime.run();
-    println!("ascent: {} milis", now.elapsed().as_millis());
-    println!("inferred tuples: {}", ascnt_runtime.tc.len());
-}
-*/
-crepe! {
-    @input
-    struct RDF(usize, usize, usize);
+        },
+        RDFS => {
+            let rdfs = RDF::new().load();
 
-    @output
-    struct T(usize, usize, usize);
+            for mat_mct_size in &mat_mct_sizes {
+                let mut dyre_rdfs = DyreRDFS::new();
+                let rdfs_updates = into_benchmark(rdfs.clone(), *mat_mct_size);
+                for (idx, update) in rdfs_updates.iter().enumerate() {
+                    let elapsed_rdfs = dyre_rdfs.update(&update);
+                    let op = if idx == 0 { "mat" } else if idx == 1 { "add" } else { "del" };
 
-    T(s, p, o) <- RDF(s, p, o);
-    T(y, 0, x) <- T(a, 3, x), T(y, a, z);
-    T(z, 0, x) <- T(a, 4, x), T(y, a, z);
-    T(x, 2, z) <- T(x, 2, y), T(y, 2, z);
-    T(x, 1, z) <- T(x, 1, y), T(y, 1, z);
-    T(z, 0, y) <- T(x, 1, y), T(z, 0, x);
-    T(x, b, y) <- T(a, 2, b), T(x, a, y);
-}
+                    println!("Elapsed RDFS {} - {} - {} ms - {} tuples", op, mat_mct_size, elapsed_rdfs, dyre_rdfs.triple_count());
+                }
+                println!("\n")
+            }
+        },
+        OWL2RL => {
+            let owl2rl = LUBMOWL2RL::new().load();
 
-ascent! {
-    relation RDF(usize, usize, usize);
-    relation T(usize, usize, usize);
+            for mat_mct_size in &mat_mct_sizes {
+                let mut dyre_owl2rl = DyreOWL2RL::new();
+                let owl2rl_updates = into_benchmark(owl2rl.clone(), *mat_mct_size);
+                for (idx, update) in owl2rl_updates.iter().enumerate() {
+                    let elapsed_owl2rl = dyre_owl2rl.update(&update);
+                    let op = if idx == 0 { "mat" } else if idx == 1 { "add" } else { "del" };
 
-    T(s, p, o) <-- RDF(s, p, o);
-    T(y, 0, x) <-- T(a, 3, x), T(y, a, z);
-    T(z, 0, x) <-- T(a, 4, x), T(y, a, z);
-    T(x, 2, z) <-- T(x, 2, y), T(y, 2, z);
-    T(x, 1, z) <-- T(x, 1, y), T(y, 1, z);
-    T(z, 0, y) <-- T(x, 1, y), T(z, 0, x);
-    T(x, b, y) <-- T(a, 2, b), T(x, a, y);
-}
-
-const TYPE: &'static str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>";
-const SUB_CLASS_OF: &'static str = "<http://www.w3.org/2000/01/rdf-schema#subClassOf>";
-const SUB_PROPERTY_OF: &'static str = "<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>";
-const DOMAIN: &'static str = "<http://www.w3.org/2000/01/rdf-schema#domain>";
-const RANGE: &'static str = "<http://www.w3.org/2000/01/rdf-schema#range>";
-const PROPERTY: &'static str = "<http://www.w3.org/1999/02/22-rdf-syntax-ns#Property>";
-const PREFIX: &'static str = "http://www.lehigh.edu/~zhp2/2004/0401/univ-bench.owl#";
-
-fn parse_triple(line: &str) -> (&str, &str, &str) {
-    let triple: Vec<_> = line.split(">").collect();
-
-    return (triple[0], triple[1], triple[2]);
-}
-
-fn main() {
-    let program = program! {
-        T(?s, ?p, ?o)     <- [RDF(?s, ?p, ?o)],
-        T(?y, 0usize, ?x) <- [T(?a, 3usize, ?x), T(?y, ?a, ?z)],
-        T(?z, 0usize, ?x) <- [T(?a, 4usize, ?x), T(?y, ?a, ?z)],
-        T(?x, 2usize, ?z) <- [T(?x, 2usize, ?y), T(?y, 2usize, ?z)],
-        T(?x, 1usize, ?z) <- [T(?x, 1usize, ?y), T(?y, 1usize, ?z)],
-        T(?z, 0usize, ?y) <- [T(?x, 1usize, ?y), T(?z, 0usize, ?x)],
-        T(?x, ?b, ?y)     <- [T(?a, 2usize, ?b), T(?x, ?a, ?y)]
-    };
-
-    let mut rodeo = Rodeo::default();
-    rodeo.get_or_intern(TYPE);
-    rodeo.get_or_intern(SUB_CLASS_OF);
-    rodeo.get_or_intern(SUB_PROPERTY_OF);
-    rodeo.get_or_intern(DOMAIN);
-    rodeo.get_or_intern(RANGE);
-    rodeo.get_or_intern(PROPERTY);
-
-    let mut chibi_runtime = DyreRuntime::new(program);
-    let mut ascnt_runtime = AscentProgram::default();
-    let mut crepe_runtime = Crepe::new();
-
-    let data = include_str!("../data/lubm1.nt");
-    data.lines().into_iter().for_each(|line| {
-        if !line.contains("genid") {
-            let triple: Vec<_> = line
-                .split_whitespace()
-                .map(|resource| resource.trim())
-                .collect();
-            let s = rodeo.get_or_intern_static(triple[0]).into_usize();
-            let p = rodeo.get_or_intern_static(triple[1]).into_usize();
-            let o = rodeo.get_or_intern_static(triple[2]).into_usize();
-
-            chibi_runtime.insert("RDF", vec![s, p, o]);
-            crepe_runtime.rdf.push(RDF(s, p, o));
-            ascnt_runtime.RDF.push((s, p, o));
-        }
-    });
-    println!("Number of {:?}", rodeo.iter().len());
-
-    let now = Instant::now();
-    chibi_runtime.poll();
-    println!("chibi: {} milis", now.elapsed().as_millis());
-    let q = build_query!(T(_, _, _));
-    let answer: Vec<_> = chibi_runtime.query(&q).unwrap().into_iter().collect();
-    println!("inferred tuples: {}", answer.len());
-
-    let now = Instant::now();
-    let crepe_out = crepe_runtime.run();
-    println!("crepe: {} milis", now.elapsed().as_millis());
-    println!("inferred tuples: {}", crepe_out.0.len());
-
-    let now = Instant::now();
-    ascnt_runtime.run();
-    println!("ascent: {} milis", now.elapsed().as_millis());
-    println!("inferred tuples: {}", ascnt_runtime.T.len());
+                    println!("Elapsed OWL2RL {} - {} - {} ms - {} tuples", op, mat_mct_size, elapsed_owl2rl, dyre_owl2rl.triple_count());
+                }
+                println!("\n")
+            }
+        },
+    }
 }

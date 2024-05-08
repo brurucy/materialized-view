@@ -1,28 +1,26 @@
 use crate::engine::interning::{InternedTerm, reliably_intern_rule};
 use crate::engine::storage::RelationStorage;
-use crate::evaluation::query::pattern_match;
+use crate::engine::query::pattern_match;
 use datalog_syntax::*;
 use dbsp::operator::FilterMap;
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use lasso::{Rodeo, Spur};
 use std::collections::HashSet;
 use std::fmt;
-use ascent::internal::Instant;
 use crate::engine::encoding::{apply_rewrite, decode_fact, encode_atom, encode_fact, EncodedAtom, EncodedRewrite, is_encoded_atom_ground, merge_right_rewrite_into_left, project_encoded_atom, project_encoded_fact, unify_encoded_atom_with_encoded_rewrite};
 
 pub type EncodedFactWithRelationId = (usize, EncodedAtom);
 pub type EncodedAtomWithRelationId = (usize, EncodedAtom);
 pub type FlattenedInternedAtom = (usize, Vec<InternedTerm>);
 pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInternedAtom>);
-
 pub type Weight = isize;
 pub struct DyreRuntime {
     dbsp_runtime: DBSPHandle,
     fact_sink: CollectionHandle<usize, (u64, Weight)>,
     rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
     fact_source: OutputHandle<OrdZSet<(usize, EncodedAtom), Weight>>,
-    materialisation: RelationStorage,
-    safe: bool,
+    pub(crate) materialisation: RelationStorage,
+    pub(crate) safe: bool,
 }
 
 pub fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(usize, Vec<usize>)> {
@@ -74,16 +72,32 @@ impl<'a, T: fmt::Debug + 'a> fmt::Debug for SliceDisplay<'a, T> {
 
 impl DyreRuntime {
     pub fn insert(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
-        let interned_symbol = self.materialisation.inner.get_index_of(relation).unwrap();
-        let safe_ground_atom = ground_atom.into_iter().map(|term| term + 1).collect();
+        if let Some(interned_symbol) = self.materialisation.inner.get_index_of(relation) {
+            let safe_ground_atom = ground_atom.into_iter().map(|term| term + 1).collect();
 
-        self.fact_sink
-            .push(interned_symbol, (encode_fact(&safe_ground_atom), 1));
+            self.fact_sink.push(interned_symbol, (encode_fact(&safe_ground_atom), 1));
 
-        self.safe = false;
+            self.safe = false;
 
-        self.materialisation.insert(relation, safe_ground_atom)
+            return self.materialisation.insert(relation, safe_ground_atom)
+        }
+
+        false
     }
+    pub fn delete(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
+        if let Some(interned_symbol) = self.materialisation.inner.get_index_of(relation) {
+            let safe_ground_atom = ground_atom.into_iter().map(|term| term + 1).collect();
+
+            self.fact_sink
+                .push(interned_symbol, (encode_fact(&safe_ground_atom), -1));
+            self.safe = false;
+
+            return self.materialisation.remove(relation, &safe_ground_atom)
+        }
+
+        false
+    }
+
     pub fn remove(&mut self, query: &Query) -> impl Iterator<Item = AnonymousGroundAtom> {
         let query_symbol = query.symbol;
         let interned_symbol = self.materialisation.inner.get_index_of(query_symbol).unwrap();
@@ -141,11 +155,10 @@ impl DyreRuntime {
             .map(|fact|fact.iter().map(|term| term - 1).collect::<Vec<_>>())
             .filter(|fact| pattern_match(query, fact)))
     }
-    pub fn poll(&mut self) {
-        let now = Instant::now();
+    pub(crate) fn step(&mut self) {
         self.dbsp_runtime.step().unwrap();
-        println!("step: {} milis", now.elapsed().as_millis());
-
+    }
+    pub(crate) fn consolidate(&mut self) {
         let consolidated = self.fact_source.consolidate();
         consolidated
             .iter()
@@ -159,10 +172,13 @@ impl DyreRuntime {
                     self.materialisation.remove(&sym, &decoded_fact);
                 }
             });
+    }
+    pub fn poll(&mut self) {
+        self.step();
+        self.consolidate();
 
         self.safe = true;
     }
-
     pub fn new(program: Program) -> Self {
         let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
             Runtime::init_circuit(8, |circuit| {

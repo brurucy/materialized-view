@@ -1,2 +1,2 @@
 pub mod engine;
-mod evaluation;
+pub mod evaluation;
