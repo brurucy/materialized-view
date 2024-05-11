@@ -1,4 +1,3 @@
-use crate::engine::interning::{InternedTerm, reliably_intern_rule};
 use crate::engine::storage::RelationStorage;
 use crate::engine::query::pattern_match;
 use datalog_syntax::*;
@@ -7,8 +6,11 @@ use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, O
 use lasso::{Rodeo, Spur};
 use std::collections::HashSet;
 use std::fmt;
-use crate::engine::encoding::{apply_rewrite, decode_fact, encode_atom, encode_fact, EncodedAtom, EncodedRewrite, is_encoded_atom_ground, merge_right_rewrite_into_left, project_encoded_atom, project_encoded_fact, unify_encoded_atom_with_encoded_rewrite};
+use crate::interning::interned_datalog_structures::{InternedTerm, intern_rule};
+use crate::rewriting::atom::{decode_fact, encode_atom, encode_fact, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
+use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
+pub type ProjectedEncodedFact = EncodedAtom;
 pub type EncodedFactWithRelationId = (usize, EncodedAtom);
 pub type EncodedAtomWithRelationId = (usize, EncodedAtom);
 pub type FlattenedInternedAtom = (usize, Vec<InternedTerm>);
@@ -16,7 +18,7 @@ pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInt
 pub type Weight = isize;
 pub struct DyreRuntime {
     dbsp_runtime: DBSPHandle,
-    fact_sink: CollectionHandle<usize, (u64, Weight)>,
+    fact_sink: CollectionHandle<usize, (EncodedAtom, Weight)>,
     rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
     fact_source: OutputHandle<OrdZSet<(usize, EncodedAtom), Weight>>,
     pub(crate) materialisation: RelationStorage,
@@ -210,8 +212,8 @@ impl DyreRuntime {
                     .recursive(
                         |child,
                         (idb_index, rewrites): (
-                             Stream<_, OrdIndexedZSet<(usize, EncodedAtom), EncodedAtom, isize>>,
-                             Stream<_, OrdIndexedZSet<(usize, usize), EncodedRewrite, isize>>,
+                            Stream<_, OrdIndexedZSet<(usize, ProjectedEncodedFact), EncodedAtom, isize>>,
+                            Stream<_, OrdIndexedZSet<(usize, usize), EncodedRewrite, isize>>,
                         )| {
                             let iteration = iteration.delta0(child);
                             let edb_index = fact_index.delta0(child);
@@ -290,7 +292,7 @@ impl DyreRuntime {
             });
 
             let rule_id = rule.id;
-            let interned_rule = reliably_intern_rule(rule.clone(), &mut variable_interner, &materialisation);
+            let interned_rule = intern_rule(rule.clone(), &mut variable_interner, &materialisation);
             let flattened_head = (interned_rule.head.symbol, interned_rule.head.terms);
             let flattened_body = interned_rule.body.into_iter().map(|atom| (atom.symbol, atom.terms)).collect();
 
@@ -490,7 +492,7 @@ mod tests {
         // Update
         // Point removals are a bit annoying, since they incur creating a query.
         let d_to_e = build_query!(e(4, 5));
-        let deletions: Vec<_> = runtime.remove(&d_to_e).collect();
+        runtime.remove(&d_to_e);
         assert!(!runtime.safe());
         runtime.poll();
         assert!(runtime.safe());

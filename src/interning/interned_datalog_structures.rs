@@ -25,7 +25,7 @@ pub struct InternedRule {
     pub body: Vec<InternedAtom>,
 }
 
-pub fn reliably_intern_atom(atom: &Atom, variable_interner: &mut Rodeo, relation_storage: &RelationStorage) -> InternedAtom {
+pub fn intern_atom(atom: &Atom, variable_interner: &mut Rodeo, relation_storage: &RelationStorage) -> InternedAtom {
     let symbol = relation_storage.inner.get_index_of(&atom.symbol).unwrap();
     let terms = atom
         .terms
@@ -44,16 +44,16 @@ pub fn reliably_intern_atom(atom: &Atom, variable_interner: &mut Rodeo, relation
     };
 }
 
-pub fn reliably_intern_rule(rule: Rule, interner: &mut Rodeo, relation_storage: &RelationStorage) -> InternedRule {
+pub fn intern_rule(rule: Rule, interner: &mut Rodeo, relation_storage: &RelationStorage) -> InternedRule {
     InternedRule {
-        head: reliably_intern_atom(&rule.head, interner, relation_storage),
+        head: intern_atom(&rule.head, interner, relation_storage),
         body: rule
             .body
             .iter()
-            .map(|atom| reliably_intern_atom(atom, interner, relation_storage))
+            .map(|atom| intern_atom(atom, interner, relation_storage))
             .collect(),
     }
 }
 
-pub type Domain = usize;
-pub type Substitution = (Domain, TypedValue);
+pub type RuleLocalVariableIdentifier = usize;
+pub type Substitution = (RuleLocalVariableIdentifier, TypedValue);

@@ -1,2 +1,3 @@
 pub mod engine;
-pub mod evaluation;
+mod rewriting;
+mod interning;
