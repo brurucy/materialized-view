@@ -1,5 +1,5 @@
 use datalog_syntax::TypedValue;
-use crate::interning::interned_datalog_structures::{RuleLocalVariableIdentifier, Substitution};
+use crate::interning::rule::{RuleLocalVariableIdentifier, Substitution};
 use crate::rewriting::atom::{EncodedAtom, TERM_COUNT_BITS, TERM_COUNT_MASK, TERM_KIND_AND_VALUE_MASK, TERM_VALUE_BITS};
 
 pub type EncodedRewrite = u128;
@@ -138,7 +138,7 @@ pub fn merge_right_rewrite_into_left(left_rewrite: EncodedRewrite, right_rewrite
 
 #[cfg(test)]
 mod tests {
-    use crate::interning::interned_datalog_structures::InternedTerm;
+    use crate::interning::rule::InternedTerm;
     use crate::rewriting::atom::{decode_fact, encode_atom, encode_fact};
     use crate::rewriting::rewrite::{add_substitution, apply_rewrite, EncodedRewrite, get_from_encoded_rewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
@@ -160,17 +160,17 @@ mod tests {
         add_substitution(&mut rewrite, (3, 53));
 
         let result = apply_rewrite(&rewrite, &encoded_atom);
-        // Idempotent
         let result = apply_rewrite(&rewrite, &result);
+        // Idempotency
         let result = apply_rewrite(&rewrite, &result);
-        assert_eq!(decode_fact(result), vec![50, 2]);
+        assert_eq!(decode_fact(result), [50, 2, 0]);
     }
 
     #[test]
     fn test_unify_encoded_atom_with_encoded_rewrite() {
         let encoded_atom_0 = encode_atom(&vec![InternedTerm::Constant(2), InternedTerm::Variable(1)]);
         let encoded_atom_1 = encode_atom(&vec![InternedTerm::Variable(1)]);
-        let encoded_fact = encode_fact(&vec![2, 3]);
+        let encoded_fact = encode_fact(&[2, 3, 0]);
 
         let rewrite_0 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_1, encoded_fact);
         assert!(rewrite_0.is_none());
@@ -186,14 +186,14 @@ mod tests {
         let encoded_atom_0 = encode_atom(&vec![InternedTerm::Constant(3), InternedTerm::Variable(4), InternedTerm::Variable(5)]);
         let encoded_atom_1 = encode_atom(&vec![InternedTerm::Variable(6)]);
 
-        let encoded_fact_0 = encode_fact(&vec![3, 5, 7]);
-        let encoded_fact_1 = encode_fact(&vec![8]);
+        let encoded_fact_0 = encode_fact(&[3, 5, 7]);
+        let encoded_fact_1 = encode_fact(&[8, 0, 0]);
 
         let rewrite_0 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_0, encoded_fact_0);
         let rewrite_1 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_1, encoded_fact_1);
 
         let encoded_atom_2 = encode_atom(&vec![InternedTerm::Variable(4), InternedTerm::Variable(5), InternedTerm::Variable(6)]);
-        let expected_encoded_fact = vec![5, 7, 8];
+        let expected_encoded_fact = [5, 7, 8];
 
         let rewrite_2 = merge_right_rewrite_into_left(rewrite_0.unwrap(), rewrite_1.unwrap());
         assert_eq!(encode_fact(&expected_encoded_fact), apply_rewrite(&rewrite_2, &encoded_atom_2))

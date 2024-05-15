@@ -10,7 +10,6 @@ proc-macro = true
 [dependencies]
 syn = "1.0"
 quote = "1.0"
-datalog-syntax = { path = "../datalog-syntax" }
 
 [dev-dependencies]
 pretty_assertions = "0.7"

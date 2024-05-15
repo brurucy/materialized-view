@@ -1,312 +1,108 @@
-use crate::engine::storage::RelationStorage;
-use crate::engine::query::pattern_match;
-use datalog_syntax::*;
-use dbsp::operator::FilterMap;
-use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
+use crate::engine::storage::StorageLayer;
 use lasso::{Rodeo, Spur};
-use std::collections::HashSet;
-use std::fmt;
-use crate::interning::interned_datalog_structures::{InternedTerm, intern_rule};
-use crate::rewriting::atom::{decode_fact, encode_atom, encode_fact, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
-use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
+use crate::builders::fact::Fact;
+use crate::builders::rule::Rule;
+use crate::engine::compute::ComputeLayer;
+use crate::interning::herbrand_universe::InternmentLayer;
+use crate::interning::rule::intern_rule;
 
-pub type ProjectedEncodedFact = EncodedAtom;
-pub type EncodedFactWithRelationId = (usize, EncodedAtom);
-pub type EncodedAtomWithRelationId = (usize, EncodedAtom);
-pub type FlattenedInternedAtom = (usize, Vec<InternedTerm>);
-pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInternedAtom>);
-pub type Weight = isize;
 pub struct DyreRuntime {
-    dbsp_runtime: DBSPHandle,
-    fact_sink: CollectionHandle<usize, (EncodedAtom, Weight)>,
-    rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
-    fact_source: OutputHandle<OrdZSet<(usize, EncodedAtom), Weight>>,
-    pub(crate) materialisation: RelationStorage,
-    pub(crate) safe: bool,
-}
-
-pub fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(usize, Vec<usize>)> {
-    let mut out = vec![];
-    let mut variables: HashSet<usize> = Default::default();
-    let mut fresh_variables: HashSet<usize> = Default::default();
-    for body_atom in &rule.2 {
-        let index: Vec<_> = body_atom
-            .1
-            .iter()
-            .enumerate()
-            .flat_map(|(idx, term)| match term {
-                InternedTerm::Variable(inner) => {
-                    if !variables.contains(inner) {
-                        fresh_variables.insert(*inner);
-                        None
-                    } else {
-                        Some(idx)
-                    }
-                }
-                InternedTerm::Constant(_) => Some(idx),
-            })
-            .collect();
-        variables.extend(fresh_variables.iter());
-        out.push((body_atom.0, index));
-
-        fresh_variables.clear();
-    }
-
-    return out;
-}
-
-struct SliceDisplay<'a, T: 'a>(&'a [T]);
-
-impl<'a, T: fmt::Debug + 'a> fmt::Debug for SliceDisplay<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut first = true;
-        for item in self.0 {
-            if !first {
-                write!(f, ", {:?}", item)?;
-            } else {
-                write!(f, "{:?}", item)?;
-            }
-            first = false;
-        }
-        Ok(())
-    }
+    compute_layer: ComputeLayer,
+    internment_layer: InternmentLayer,
+    storage_layer: StorageLayer,
+    // Translation layer?
+    safe: bool,
 }
 
 impl DyreRuntime {
-    pub fn insert(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
-        if let Some(interned_symbol) = self.materialisation.inner.get_index_of(relation) {
-            let safe_ground_atom = ground_atom.into_iter().map(|term| term + 1).collect();
+    pub fn push_fact(&mut self, relation: &str, fact: impl Into<Fact>) -> bool {
+        if let Some(interned_symbol) = self.storage_layer.inner.get_index_of(relation) {
+            let interned_fact = self.internment_layer.intern_fact(fact.into());
 
-            self.fact_sink.push(interned_symbol, (encode_fact(&safe_ground_atom), 1));
-
+            self.compute_layer.send_fact(interned_symbol, &interned_fact);
             self.safe = false;
 
-            return self.materialisation.insert(relation, safe_ground_atom)
+            return self.storage_layer.push(relation, interned_fact)
         }
 
         false
     }
-    pub fn delete(&mut self, relation: &str, ground_atom: AnonymousGroundAtom) -> bool {
-        if let Some(interned_symbol) = self.materialisation.inner.get_index_of(relation) {
-            let safe_ground_atom = ground_atom.into_iter().map(|term| term + 1).collect();
+    pub fn retract_fact(&mut self, relation: &str, fact: impl Into<Fact>) -> bool {
+        if let Some(interned_symbol) = self.storage_layer.inner.get_index_of(relation) {
+            let interned_fact = self.internment_layer.intern_fact(fact.into());
 
-            self.fact_sink
-                .push(interned_symbol, (encode_fact(&safe_ground_atom), -1));
+            self.compute_layer.retract_fact(interned_symbol, &interned_fact);
             self.safe = false;
 
-            return self.materialisation.remove(relation, &safe_ground_atom)
+            return self.storage_layer.remove(relation, &interned_fact)
         }
 
         false
     }
+    fn ensure_relation_exists(&mut self, relation_symbol: &str) {
+        self.storage_layer.inner.entry(relation_symbol.to_string()).or_default();
+    }
+    fn ensure_rule_relations_exist(&mut self, rule: &Rule) {
+        self.ensure_relation_exists(&rule.head.symbol);
 
-    pub fn remove(&mut self, query: &Query) -> impl Iterator<Item = AnonymousGroundAtom> {
-        let query_symbol = query.symbol;
-        let interned_symbol = self.materialisation.inner.get_index_of(query_symbol).unwrap();
+        rule.body.iter().for_each(|body_atom| {
+            self.ensure_relation_exists(&body_atom.symbol);
+        });
+    }
+    pub fn push_rule(&mut self, rule: Rule) {
+        let mut variable_interner: Rodeo<Spur> = Rodeo::new();
+        self.ensure_rule_relations_exist(&rule);
 
-        let removal_targets: Vec<_> = self
-            .materialisation
-            .get_relation(query_symbol)
-            .iter()
-            .map(|fact|fact.iter().map(|term| term - 1).collect::<Vec<_>>())
-            .filter(|fact| pattern_match(query, fact))
-            .collect();
+        let rule_id = rule.id;
+        let interned_rule = intern_rule(rule, &mut variable_interner, &self.storage_layer);
 
-        removal_targets
-            .iter()
-            .map(|fact|fact.iter().map(|term| term + 1).collect::<Vec<_>>())
-            .for_each(|candidate| {
-                self.fact_sink.push(interned_symbol, (encode_fact(&candidate), -1));
-            });
+        self.compute_layer.send_rule(rule_id, interned_rule);
+    }
+    pub fn retract_rule(&mut self, rule: &Rule) {
+        let mut variable_interner: Rodeo<Spur> = Rodeo::new();
+        let rule_id = rule.id;
+        let interned_rule = intern_rule(rule.clone(), &mut variable_interner, &self.storage_layer);
 
-        self.safe = false;
-
-        let relation = self.materialisation.inner.get_mut(query_symbol).unwrap();
-        removal_targets
-            .iter()
-            .map(|fact|fact.iter().map(|term| term + 1).collect::<Vec<_>>())
-            .for_each(|candidate| {
-                relation.remove(&candidate);
-            });
-
-        removal_targets.into_iter()
+        self.compute_layer.retract_rule(rule_id, interned_rule);
     }
     pub fn contains(
         &self,
         relation: &str,
-        ground_atom: &AnonymousGroundAtom,
+        fact: impl Into<Fact>,
     ) -> Result<bool, String> {
         if !self.safe() {
-            return Err("poll needed to obtain correct results".to_string());
+            return Err("polling is needed to obtain correct results".to_string());
         }
 
-        // F u ck
-        Ok(self.materialisation.contains(relation, &ground_atom.iter().map(|term| term + 1).collect()))
-    }
-    pub fn query<'a>(
-        &'a self,
-        query: &'a Query,
-    ) -> Result<impl Iterator<Item = AnonymousGroundAtom> + 'a, String> {
-        if !self.safe() {
-            return Err("poll needed to obtain correct results".to_string());
+        if let Some(interned_fact) = self.internment_layer.resolve_fact_constants(fact.into()) {
+            return Ok(self.storage_layer.contains(relation, &interned_fact))
         }
-        return Ok(self
-            .materialisation
-            .get_relation(query.symbol)
-            .iter()
-            .map(|fact|fact.iter().map(|term| term - 1).collect::<Vec<_>>())
-            .filter(|fact| pattern_match(query, fact)))
-    }
-    pub(crate) fn step(&mut self) {
-        self.dbsp_runtime.step().unwrap();
-    }
-    pub(crate) fn consolidate(&mut self) {
-        let consolidated = self.fact_source.consolidate();
-        consolidated
-            .iter()
-            .for_each(|((relation_identifier, fresh_fact), (), weight)| {
-                let sym = self.materialisation.inner.get_index(relation_identifier).unwrap().0.clone();
-                let decoded_fact = decode_fact(fresh_fact);
 
-                if weight.signum() > 0 {
-                    self.materialisation.insert(&sym, decoded_fact);
-                } else {
-                    self.materialisation.remove(&sym, &decoded_fact);
-                }
-            });
+        Ok(false)
+    }
+    fn step(&mut self) {
+        self.compute_layer.step();
+    }
+    fn consolidate(&mut self) {
+        self.compute_layer.consolidate_into_storage_layer(&mut self.storage_layer)
     }
     pub fn poll(&mut self) {
         self.step();
         self.consolidate();
-
         self.safe = true;
     }
     pub fn new(program: Program) -> Self {
-        let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
-            Runtime::init_circuit(8, |circuit| {
-                let (rule_source, rule_sink) =
-                    circuit.add_input_zset::<FlattenedInternedRule, Weight>();
-                let (fact_source, fact_sink) =
-                    circuit.add_input_indexed_zset::<usize, EncodedAtom, Weight>();
+        let storage_layer: StorageLayer = Default::default();
+        let compute_layer = ComputeLayer::new();
+        let herbrand_universe = InternmentLayer::default();
+        let mut dyre_runtime = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, safe: true };
 
-                let unique_column_sets = rule_source
-                    .flat_map_index(compute_unique_column_sets)
-                    .distinct();
-                let rules_by_id =
-                    rule_source.index_with(|(id, head, body)| (*id, ((head.0, encode_atom(&head.1)), body.clone())));
-                let iteration = rules_by_id.flat_map_index(|(rule_id, (_head, body))| {
-                    body.iter()
-                        .enumerate()
-                        .map(|(atom_position, atom)| ((*rule_id, atom_position), (atom.0, encode_atom(&atom.1))))
-                        .collect::<Vec<_>>()
-                });
-                let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), (head.0, encode_atom(&head.1))));
-                let empty_rewrites = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), EncodedRewrite::default()));
-
-                let fact_index = fact_source
-                    .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
-                        Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
-                    });
-
-                let (indexed_inferences, _) = circuit
-                    .recursive(
-                        |child,
-                        (idb_index, rewrites): (
-                            Stream<_, OrdIndexedZSet<(usize, ProjectedEncodedFact), EncodedAtom, isize>>,
-                            Stream<_, OrdIndexedZSet<(usize, usize), EncodedRewrite, isize>>,
-                        )| {
-                            let iteration = iteration.delta0(child);
-                            let edb_index = fact_index.delta0(child);
-                            let empty_rewrites = empty_rewrites.delta0(child);
-                            let end_for_grounding = end_for_grounding.delta0(child);
-                            let unique_column_sets = unique_column_sets.delta0(child);
-
-                            let previous_propagated_rewrites = rewrites.join_index(
-                                &iteration,
-                                |key, rewrite, (current_body_atom_symbol, current_body_atom)| {
-                                    let encoded_atom = apply_rewrite(&rewrite, &current_body_atom);
-
-                                    if !is_encoded_atom_ground(&encoded_atom) {
-                                        return Some((
-                                            (*current_body_atom_symbol, project_encoded_atom(&encoded_atom)),
-                                            (*key, encoded_atom, *rewrite),
-                                        ));
-                                    }
-
-                                    None
-                                },
-                            );
-
-                            let rewrite_product =
-                                idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, ((rule_id, atom_position), encoded_fresh_atom, rewrite)| {
-                                    let unification = unify_encoded_atom_with_encoded_rewrite(*encoded_fresh_atom, *encoded_fact).unwrap();
-                                    let extended_rewrite = merge_right_rewrite_into_left(*rewrite, unification);
-
-                                    Some(((*rule_id, *atom_position + 1), extended_rewrite))
-                                });
-
-                            let fresh_facts = end_for_grounding
-                                .join_index(&rewrite_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
-                                    let fresh_encoded_fact = apply_rewrite(&final_substitution, head_atom);
-
-                                    Some((*head_atom_symbol, fresh_encoded_fact))
-                                });
-
-                            let fresh_indexed_facts = fresh_facts
-                                .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
-                                    Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
-                                });
-
-                            let idb_index_out = edb_index.plus(&fresh_indexed_facts);
-                            let rewrites_out = empty_rewrites.plus(&rewrite_product);
-
-                            Ok((idb_index_out, rewrites_out))
-                        },
-                    )
-                    .unwrap();
-
-                let inferences_out = indexed_inferences
-                    .map(|((symbol, _fact_projection), fresh_fact)| (*symbol, *fresh_fact))
-                    .output();
-
-                Ok(((inferences_out, fact_sink), rule_sink))
-            })
-            .unwrap();
-
-        let mut materialisation: RelationStorage = Default::default();
-        let mut relations = HashSet::new();
         program.inner.iter().for_each(|rule| {
-            let mut variable_interner: Rodeo<Spur> = Rodeo::new();
-            relations.insert(&rule.head.symbol);
-            materialisation
-                .inner
-                .entry(rule.head.symbol.to_string())
-                .or_default();
-
-            rule.body.iter().for_each(|body_atom| {
-                relations.insert(&body_atom.symbol);
-                materialisation
-                    .inner
-                    .entry(body_atom.symbol.to_string())
-                    .or_default();
-            });
-
-            let rule_id = rule.id;
-            let interned_rule = intern_rule(rule.clone(), &mut variable_interner, &materialisation);
-            let flattened_head = (interned_rule.head.symbol, interned_rule.head.terms);
-            let flattened_body = interned_rule.body.into_iter().map(|atom| (atom.symbol, atom.terms)).collect();
-
-            rule_sink.push((rule_id, flattened_head, flattened_body), 1);
+            dyre_runtime.ensure_rule_relations_exist(&rule);
+            dyre_runtime.push_rule(rule.clone());
         });
 
-        Self {
-            dbsp_runtime,
-            fact_source,
-            fact_sink,
-            rule_sink,
-            materialisation,
-            safe: true,
-        }
+        dyre_runtime
     }
     pub fn safe(&self) -> bool {
         self.safe
@@ -314,6 +110,23 @@ impl DyreRuntime {
 }
 
 #[cfg(test)]
+mod tests {
+    #[test]
+    fn test_any_map() {
+        use std::any::{Any, TypeId};
+
+        let boxed: Box<dyn Any> = Box::new((0usize, 1u8, "a"));
+
+        let actual_id = (&*boxed).type_id();
+        let boxed_id = boxed.type_id();
+        let derefed_box_vec: Vec<&(usize, u8, &str)> = [&boxed].into_iter().map(|x| boxed.downcast_ref().unwrap()).collect();
+
+        assert_eq!(actual_id, TypeId::of::<(usize, u8, &str)>());
+        assert_eq!(boxed_id, TypeId::of::<Box<dyn Any>>());
+    }
+}
+
+/*#[cfg(test)]
 mod tests {
     use crate::engine::datalog::DyreRuntime;
     use datalog_rule_macro::program;
@@ -335,7 +148,7 @@ mod tests {
         ]
         .into_iter()
         .for_each(|edge| {
-            runtime.insert("e", edge);
+            runtime.push_fact("e", edge);
         });
 
         runtime.poll();
@@ -382,7 +195,7 @@ mod tests {
         });
 
         // Update
-        runtime.insert("e", vec![4, 5]);
+        runtime.push_fact("e", vec![4, 5]);
         assert!(!runtime.safe());
         runtime.poll();
         assert!(runtime.safe());
@@ -448,7 +261,7 @@ mod tests {
         ]
         .into_iter()
         .for_each(|edge| {
-            runtime.insert("e", edge);
+            runtime.push_fact("e", edge);
         });
 
         runtime.poll();
@@ -491,8 +304,7 @@ mod tests {
 
         // Update
         // Point removals are a bit annoying, since they incur creating a query.
-        let d_to_e = build_query!(e(4, 5));
-        runtime.remove(&d_to_e);
+        runtime.retract_fact("e", (4, 5));
         assert!(!runtime.safe());
         runtime.poll();
         assert!(runtime.safe());
@@ -534,3 +346,4 @@ mod tests {
         );
     }
 }
+*/

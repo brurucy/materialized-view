@@ -1,1 +1,2 @@
-pub(crate) mod interned_datalog_structures;
+pub(crate) mod rule;
+pub(crate) mod herbrand_universe;

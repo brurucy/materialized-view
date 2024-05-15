@@ -1,5 +1,5 @@
-use datalog_syntax::AnonymousGroundAtom;
-use crate::interning::interned_datalog_structures::InternedTerm;
+use crate::engine::storage::InternedFact;
+use crate::interning::rule::InternedTerm;
 
 pub type EncodedAtom = u64;
 pub const TERM_COUNT_BITS: u64 = 2;
@@ -7,8 +7,14 @@ pub const TERM_COUNT_MASK: u64 = TERM_COUNT_BITS + 1;
 pub const TERM_VALUE_BITS: u64 = 20;
 pub const TERM_VALUE_MASK: u64 = (1 << (TERM_VALUE_BITS - 1)) - 1;
 pub const TERM_KIND_AND_VALUE_MASK: u64 = (1 << TERM_VALUE_BITS) - 1;
-pub fn encode_fact(value: &AnonymousGroundAtom) -> EncodedAtom {
-    let len = value.len() as u64;
+pub fn encode_fact(value: &InternedFact) -> EncodedAtom {
+    let len = match value {
+        &[0, _b, _c] => 0,
+        &[_a, 0, _c] => 1,
+        &[_a, _b, 0] => 2,
+        &[_a, _b, _c] => 3,
+        _ => unreachable!()
+    };
     let mut encoded_fact = len;
 
     for (idx, term_value) in value.iter().enumerate() {
@@ -81,9 +87,9 @@ pub fn project_encoded_atom(atom: &EncodedAtom) -> EncodedAtom {
 
     atom ^ projection_mask
 }
-pub fn decode_fact(fact: EncodedAtom) -> AnonymousGroundAtom {
+pub fn decode_fact(fact: EncodedAtom) -> InternedFact {
     let len = (TERM_COUNT_MASK & fact) as usize;
-    let mut decoded_fact = Vec::with_capacity(len);
+    let mut decoded_fact = [0; 3];
     for idx in 0..len {
         let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * idx as u64);
 
@@ -94,7 +100,7 @@ pub fn decode_fact(fact: EncodedAtom) -> AnonymousGroundAtom {
         let term = fact & term_mask;
         let shifted_term = term >> shift_amount >> 1;
 
-        decoded_fact.push(shifted_term as usize);
+        decoded_fact[idx] = shifted_term as usize;
     }
 
     decoded_fact
@@ -107,12 +113,12 @@ pub fn is_encoded_atom_ground(atom: &EncodedAtom) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::interning::interned_datalog_structures::InternedTerm;
+    use crate::interning::rule::InternedTerm;
     use crate::rewriting::atom::{decode_fact, encode_atom, encode_fact, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
 
     #[test]
     fn test_encode_fact() {
-        let fact = vec![1usize, 2usize, 3usize];
+        let fact = [1usize, 2usize, 3usize];
         let expected_encoded_length = 3u64;
         let expected_encoded_first_term = 1u64 << 3;
         let expected_encoded_second_term = 2u64 << 23;
@@ -139,9 +145,9 @@ mod tests {
 
     #[test]
     fn test_decode_fact() {
-        let expected_fact_0 = vec![1usize, 2usize, 3usize];
-        let expected_fact_1 = vec![1usize, 2usize];
-        let expected_fact_2 = vec![1usize];
+        let expected_fact_0 = [1usize, 2usize, 3usize];
+        let expected_fact_1 = [1usize, 2usize, 0];
+        let expected_fact_2 = [1usize, 0, 0];
 
         assert_eq!(expected_fact_0, decode_fact(encode_fact(&expected_fact_0)));
         assert_eq!(expected_fact_1, decode_fact(encode_fact(&expected_fact_1)));
@@ -150,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_project_encoded_fact() {
-        let fact = vec![1usize, 2usize, 3usize];
+        let fact = [1usize, 2usize, 3usize];
         let encoded_fact = encode_fact(&fact);
 
         let projection_0 = vec![0, 1, 2];
@@ -190,7 +196,7 @@ mod tests {
         let encoded_atom_2 = encode_atom(&vec![InternedTerm::Constant(2), InternedTerm::Constant(3)]);
         assert!(is_encoded_atom_ground(&encoded_atom_2));
 
-        let encoded_fact = encode_fact(&vec![2, 3]);
+        let encoded_fact = encode_fact(&[2, 3, 0]);
         assert!(is_encoded_atom_ground(&encoded_fact));
     }
 }

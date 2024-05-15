@@ -1,16 +1,15 @@
-use datalog_syntax::{Atom, Rule, Term, TypedValue};
 use lasso::{Key, Rodeo};
 use rkyv::{Archive, Deserialize, Serialize};
 use size_of::SizeOf;
 use std::fmt::{Debug};
-use crate::engine::storage::RelationStorage;
+use crate::engine::storage::StorageLayer;
 
 #[derive(
     Ord, PartialOrd, Eq, PartialEq, Clone, Hash, Debug, Archive, Serialize, Deserialize, SizeOf,
 )]
 pub enum InternedTerm {
     Variable(usize),
-    Constant(TypedValue),
+    Constant(usize),
 }
 
 #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Hash, Archive, Serialize, Deserialize, SizeOf)]
@@ -25,7 +24,7 @@ pub struct InternedRule {
     pub body: Vec<InternedAtom>,
 }
 
-pub fn intern_atom(atom: &Atom, variable_interner: &mut Rodeo, relation_storage: &RelationStorage) -> InternedAtom {
+pub fn intern_atom(atom: &Atom, variable_interner: &mut Rodeo, relation_storage: &StorageLayer) -> InternedAtom {
     let symbol = relation_storage.inner.get_index_of(&atom.symbol).unwrap();
     let terms = atom
         .terms
@@ -44,7 +43,7 @@ pub fn intern_atom(atom: &Atom, variable_interner: &mut Rodeo, relation_storage:
     };
 }
 
-pub fn intern_rule(rule: Rule, interner: &mut Rodeo, relation_storage: &RelationStorage) -> InternedRule {
+pub fn intern_rule(rule: Rule, interner: &mut Rodeo, relation_storage: &StorageLayer) -> InternedRule {
     InternedRule {
         head: intern_atom(&rule.head, interner, relation_storage),
         body: rule
