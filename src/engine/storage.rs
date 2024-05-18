@@ -1,17 +1,18 @@
 use indexmap::{IndexMap, IndexSet};
-pub type InternedFact = [usize; 3];
-pub type FactStorage = IndexSet<InternedFact>;
+pub type RelationIdentifier = u64;
+pub type InternedConstantTerms = [usize; 3];
+pub type FactStorage = IndexSet<InternedConstantTerms>;
 #[derive(Default)]
 pub struct StorageLayer {
-    pub(crate) inner: IndexMap<String, FactStorage>,
+    pub(crate) inner: IndexMap<RelationIdentifier, FactStorage>,
 }
 
 impl StorageLayer {
-    pub fn get_relation(&self, relation_symbol: &str) -> &FactStorage {
-        return self.inner.get(relation_symbol).unwrap()
+    pub fn get_relation(&self, relation_identifier: &RelationIdentifier) -> &FactStorage {
+        return self.inner.get(relation_identifier).unwrap()
     }
-    pub fn push(&mut self, relation_symbol: &str, fact: InternedFact) -> bool {
-        if let Some(relation) = self.inner.get_mut(relation_symbol) {
+    pub fn push(&mut self, relation_identifier: &RelationIdentifier, fact: InternedConstantTerms) -> bool {
+        if let Some(relation) = self.inner.get_mut(relation_identifier) {
             return relation.insert(fact);
         }
 
@@ -19,19 +20,19 @@ impl StorageLayer {
         fresh_fact_storage.insert(fact);
 
         self.inner
-            .insert(relation_symbol.to_string(), fresh_fact_storage);
+            .insert(*relation_identifier, fresh_fact_storage);
 
         true
     }
-    pub fn remove(&mut self, relation_symbol: &str, fact: &InternedFact) -> bool {
-        if let Some(relation) = self.inner.get_mut(relation_symbol) {
+    pub fn remove(&mut self, relation_identifier: &RelationIdentifier, fact: &InternedConstantTerms) -> bool {
+        if let Some(relation) = self.inner.get_mut(relation_identifier) {
             return relation.remove(fact);
         }
 
         false
     }
-    pub fn contains(&self, relation_symbol: &str, fact: &InternedFact) -> bool {
-        if let Some(relation) = self.inner.get(relation_symbol) {
+    pub fn contains(&self, relation_identifier: &RelationIdentifier, fact: &InternedConstantTerms) -> bool {
+        if let Some(relation) = self.inner.get(relation_identifier) {
             return relation.contains(fact);
         }
 

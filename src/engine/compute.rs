@@ -1,27 +1,24 @@
 use std::collections::HashSet;
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
-use crate::engine::storage::{InternedFact, StorageLayer};
-use crate::interning::rule::{InternedRule, InternedTerm};
-use crate::rewriting::atom::{decode_fact, encode_atom, encode_fact, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
+use crate::builders::rule::RuleIdentifier;
+use crate::engine::storage::{InternedConstantTerms, RelationIdentifier, StorageLayer};
+use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
+use crate::rewriting::atom::{decode_fact, encode_atom_terms, encode_fact, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
-pub type ProjectedEncodedFact = EncodedAtom;
-pub type FlattenedInternedAtom = (usize, Vec<InternedTerm>);
-pub type FlattenedInternedRule = (usize, FlattenedInternedAtom, Vec<FlattenedInternedAtom>);
-pub type Weight = isize;
-
-pub(crate) fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(usize, Vec<usize>)> {
+fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentifier, Vec<usize>)> {
     let mut out = vec![];
     let mut variables: HashSet<usize> = Default::default();
     let mut fresh_variables: HashSet<usize> = Default::default();
-    for body_atom in &rule.2 {
-        let index: Vec<_> = body_atom
-            .1
+    for body_atom in atoms {
+        let index: Vec<_> = body_atom.1
             .iter()
+            // A term that is 0, is not present
+            .filter(|(is_var, term)| *term != 0)
             .enumerate()
-            .flat_map(|(idx, term)| match term {
-                InternedTerm::Variable(inner) => {
+            .flat_map(|(idx, (is_var, inner))| match is_var {
+                true => {
                     if !variables.contains(inner) {
                         fresh_variables.insert(*inner);
                         None
@@ -29,7 +26,7 @@ pub(crate) fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(u
                         Some(idx)
                     }
                 }
-                InternedTerm::Constant(_) => Some(idx),
+                _ => Some(idx),
             })
             .collect();
         variables.extend(fresh_variables.iter());
@@ -38,33 +35,43 @@ pub(crate) fn compute_unique_column_sets(rule: &FlattenedInternedRule) -> Vec<(u
         fresh_variables.clear();
     }
 
-    return out;
+    out
 }
 
-
-pub type FactSink = CollectionHandle<usize, (EncodedAtom, Weight)>;
-pub type RuleSink = CollectionHandle<FlattenedInternedRule, Weight>;
-pub type FactSource = OutputHandle<OrdZSet<(usize, EncodedAtom), Weight>>;
+pub type ProjectedEncodedFact = EncodedAtom;
+pub type BodyAtomPosition = usize;
+pub type Weight = isize;
+pub type FactSink = CollectionHandle<RelationIdentifier, (EncodedAtom, Weight)>;
+pub type RuleSink = CollectionHandle<InternedRule, Weight>;
+pub type FactSource = OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>;
 pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
     let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
+    // Set the core count to whatever is available
         Runtime::init_circuit(8, |circuit| {
             let (rule_source, rule_sink) =
-                circuit.add_input_zset::<FlattenedInternedRule, Weight>();
+                circuit.add_input_zset::<InternedRule, Weight>();
             let (fact_source, fact_sink) =
-                circuit.add_input_indexed_zset::<usize, EncodedAtom, Weight>();
+                circuit.add_input_indexed_zset::<RelationIdentifier, EncodedAtom, Weight>();
 
             let unique_column_sets = rule_source
+                .map(|flattened_rule| {
+                    let head = flattened_rule.1;
+                    let mut body = flattened_rule.2.clone();
+                    body.push(head);
+
+                    body
+                })
                 .flat_map_index(compute_unique_column_sets)
                 .distinct();
             let rules_by_id =
-                rule_source.index_with(|(id, head, body)| (*id, ((head.0, encode_atom(&head.1)), body.clone())));
+                rule_source.index_with(|(id, head, body)| (*id, ((head.0, encode_atom_terms(&head.1)), body.clone())));
             let iteration = rules_by_id.flat_map_index(|(rule_id, (_head, body))| {
                 body.iter()
                     .enumerate()
-                    .map(|(atom_position, atom)| ((*rule_id, atom_position), (atom.0, encode_atom(&atom.1))))
+                    .map(|(atom_position, atom)| ((*rule_id, atom_position), (atom.0, encode_atom_terms(&atom.1))))
                     .collect::<Vec<_>>()
             });
-            let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), (head.0, encode_atom(&head.1))));
+            let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), (head.0, encode_atom_terms(&head.1))));
             let empty_rewrites = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), EncodedRewrite::default()));
 
             let fact_index = fact_source
@@ -76,8 +83,8 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 .recursive(
                     |child,
                      (idb_index, rewrites): (
-                         Stream<_, OrdIndexedZSet<(usize, ProjectedEncodedFact), EncodedAtom, isize>>,
-                         Stream<_, OrdIndexedZSet<(usize, usize), EncodedRewrite, isize>>,
+                         Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
+                         Stream<_, OrdIndexedZSet<(RuleIdentifier, BodyAtomPosition), EncodedRewrite, Weight>>,
                      )| {
                         let iteration = iteration.delta0(child);
                         let edb_index = fact_index.delta0(child);
@@ -142,17 +149,9 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
 
 pub struct ComputeLayer {
     dbsp_runtime: DBSPHandle,
-    fact_sink: CollectionHandle<usize, (EncodedAtom, Weight)>,
-    rule_sink: CollectionHandle<FlattenedInternedRule, Weight>,
-    fact_source: OutputHandle<OrdZSet<(usize, EncodedAtom), Weight>>,
-}
-
-pub fn flatten_rule(rule_id: usize, interned_rule: InternedRule) -> FlattenedInternedRule {
-    let rule_id = rule_id;
-    let flattened_head = (interned_rule.head.symbol, interned_rule.head.terms);
-    let flattened_body = interned_rule.body.into_iter().map(|atom| (atom.symbol, atom.terms)).collect();
-
-    return (rule_id, flattened_head, flattened_body)
+    fact_sink: CollectionHandle<ProjectedEncodedFact, (EncodedAtom, Weight)>,
+    rule_sink: CollectionHandle<InternedRule, Weight>,
+    fact_source: OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
 }
 
 impl ComputeLayer {
@@ -161,17 +160,17 @@ impl ComputeLayer {
 
         Self { dbsp_runtime, fact_sink, rule_sink, fact_source }
     }
-    pub fn send_fact(&self, interned_symbol: usize, interned_fact: &InternedFact) {
-        self.fact_sink.push(interned_symbol, (encode_fact(&interned_fact), 1))
+    pub fn send_fact(&self, hashed_relation_symbol: RelationIdentifier, interned_fact: &InternedConstantTerms) {
+        self.fact_sink.push(hashed_relation_symbol, (encode_fact(&interned_fact), 1))
     }
-    pub fn retract_fact(&self, interned_symbol: usize, interned_fact: &InternedFact) {
-        self.fact_sink.push(interned_symbol, (encode_fact(&interned_fact), -1))
+    pub fn retract_fact(&self, hashed_relation_symbol: RelationIdentifier, interned_fact: &InternedConstantTerms) {
+        self.fact_sink.push(hashed_relation_symbol, (encode_fact(&interned_fact), -1))
     }
-    pub fn send_rule(&self, rule_id: u64, interned_rule: InternedRule) {
-        self.rule_sink.push(flatten_rule(rule_id, interned_rule), 1)
+    pub fn send_rule(&self, rule: InternedRule) {
+        self.rule_sink.push(rule, 1)
     }
-    pub fn retract_rule(&self, rule_id: u64, interned_rule: InternedRule) {
-        self.rule_sink.push(flatten_rule(rule_id, interned_rule), -1)
+    pub fn retract_rule(&self, rule: &InternedRule) {
+        self.rule_sink.push(rule.clone(), -1)
     }
     pub fn step(&mut self) {
         self.dbsp_runtime.step().unwrap();
@@ -181,15 +180,14 @@ impl ComputeLayer {
             .fact_source
             .consolidate()
             .iter()
-            .map(|((relation_identifier, encoded_fact), _, weight)| (relation_identifier, encoded_fact, weight))
-            .for_each(|(relation_identifier, fresh_fact, weight)| {
-                let sym = storage_layer.inner.get_index(relation_identifier).unwrap().0.clone();
+            .map(|((hashed_relation_symbol, encoded_fact), _, weight)| (hashed_relation_symbol, encoded_fact, weight))
+            .for_each(|(hashed_relation_symbol, fresh_fact, weight)| {
                 let decoded_fact = decode_fact(fresh_fact);
 
                 if weight.signum() > 0 {
-                    storage_layer.push(&sym, decoded_fact);
+                    storage_layer.push(&hashed_relation_symbol, decoded_fact);
                 } else {
-                    storage_layer.remove(&sym, &decoded_fact);
+                    storage_layer.remove(&hashed_relation_symbol, &decoded_fact);
                 }
             });
     }

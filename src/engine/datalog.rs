@@ -1,46 +1,49 @@
-use crate::engine::storage::StorageLayer;
-use lasso::{Rodeo, Spur};
+use ahash::RandomState;
+use datalog_syntax::Program;
+use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::builders::fact::Fact;
 use crate::builders::rule::Rule;
 use crate::engine::compute::ComputeLayer;
 use crate::interning::herbrand_universe::InternmentLayer;
-use crate::interning::rule::intern_rule;
 
-pub struct DyreRuntime {
+pub struct MaterializedDatalogView {
     compute_layer: ComputeLayer,
     internment_layer: InternmentLayer,
     storage_layer: StorageLayer,
     // Translation layer?
+    rs: RandomState,
     safe: bool,
 }
 
-impl DyreRuntime {
+impl MaterializedDatalogView {
     pub fn push_fact(&mut self, relation: &str, fact: impl Into<Fact>) -> bool {
-        if let Some(interned_symbol) = self.storage_layer.inner.get_index_of(relation) {
+        let hashed_relation_symbol = self.rs.hash_one(&relation);
+        if let Some(fact_storage) = self.storage_layer.inner.get_mut(&hashed_relation_symbol) {
             let interned_fact = self.internment_layer.intern_fact(fact.into());
 
-            self.compute_layer.send_fact(interned_symbol, &interned_fact);
+            self.compute_layer.send_fact(hashed_relation_symbol, &interned_fact);
             self.safe = false;
 
-            return self.storage_layer.push(relation, interned_fact)
+            return fact_storage.insert(interned_fact)
         }
 
         false
     }
     pub fn retract_fact(&mut self, relation: &str, fact: impl Into<Fact>) -> bool {
-        if let Some(interned_symbol) = self.storage_layer.inner.get_index_of(relation) {
+        let hashed_relation_symbol = self.rs.hash_one(&relation);
+        if let Some(fact_storage) = self.storage_layer.inner.get_mut(&hashed_relation_symbol) {
             let interned_fact = self.internment_layer.intern_fact(fact.into());
 
-            self.compute_layer.retract_fact(interned_symbol, &interned_fact);
+            self.compute_layer.send_fact(hashed_relation_symbol, &interned_fact);
             self.safe = false;
 
-            return self.storage_layer.remove(relation, &interned_fact)
+            return fact_storage.remove(&interned_fact)
         }
 
         false
     }
-    fn ensure_relation_exists(&mut self, relation_symbol: &str) {
-        self.storage_layer.inner.entry(relation_symbol.to_string()).or_default();
+    fn ensure_relation_exists(&mut self, relation_identifier: &RelationIdentifier) {
+        self.storage_layer.inner.entry(*relation_identifier).or_default();
     }
     fn ensure_rule_relations_exist(&mut self, rule: &Rule) {
         self.ensure_relation_exists(&rule.head.symbol);
@@ -49,21 +52,16 @@ impl DyreRuntime {
             self.ensure_relation_exists(&body_atom.symbol);
         });
     }
-    pub fn push_rule(&mut self, rule: Rule) {
-        let mut variable_interner: Rodeo<Spur> = Rodeo::new();
+    pub fn push_rule(&mut self, rule: impl Into<Rule>) {
+        let rule = rule.into();
         self.ensure_rule_relations_exist(&rule);
-
-        let rule_id = rule.id;
-        let interned_rule = intern_rule(rule, &mut variable_interner, &self.storage_layer);
-
-        self.compute_layer.send_rule(rule_id, interned_rule);
+        
+        self.compute_layer.send_rule(self.internment_layer.intern_rule(rule));
     }
-    pub fn retract_rule(&mut self, rule: &Rule) {
-        let mut variable_interner: Rodeo<Spur> = Rodeo::new();
-        let rule_id = rule.id;
-        let interned_rule = intern_rule(rule.clone(), &mut variable_interner, &self.storage_layer);
+    pub fn retract_rule(&mut self, rule: impl Into<Rule>) {
+        let rule = rule.into();
 
-        self.compute_layer.retract_rule(rule_id, interned_rule);
+        self.compute_layer.retract_rule(&self.internment_layer.intern_rule(rule));
     }
     pub fn contains(
         &self,
@@ -74,8 +72,9 @@ impl DyreRuntime {
             return Err("polling is needed to obtain correct results".to_string());
         }
 
-        if let Some(interned_fact) = self.internment_layer.resolve_fact_constants(fact.into()) {
-            return Ok(self.storage_layer.contains(relation, &interned_fact))
+        let hashed_relation_symbol = self.rs.hash_one(&relation);
+        if let Some(interned_fact) = self.internment_layer.resolve_fact(fact.into()) {
+            return Ok(self.storage_layer.contains(&hashed_relation_symbol, &interned_fact))
         }
 
         Ok(false)
@@ -95,11 +94,13 @@ impl DyreRuntime {
         let storage_layer: StorageLayer = Default::default();
         let compute_layer = ComputeLayer::new();
         let herbrand_universe = InternmentLayer::default();
-        let mut dyre_runtime = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, safe: true };
+        let mut dyre_runtime = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, rs: RandomState::new(), safe: true };
 
-        program.inner.iter().for_each(|rule| {
+        program.inner.into_iter().for_each(|rule| {
+            let rule: Rule = rule.into();
+
             dyre_runtime.ensure_rule_relations_exist(&rule);
-            dyre_runtime.push_rule(rule.clone());
+            dyre_runtime.push_rule(rule);
         });
 
         dyre_runtime
@@ -126,10 +127,10 @@ mod tests {
     }
 }
 
-/*#[cfg(test)]
+#[cfg(test)]
 mod tests {
     use crate::engine::datalog::DyreRuntime;
-    use datalog_rule_macro::program;
+    use datalog_syntax_macros::program;
     use datalog_syntax::*;
     use std::collections::HashSet;
 
@@ -346,4 +347,3 @@ mod tests {
         );
     }
 }
-*/

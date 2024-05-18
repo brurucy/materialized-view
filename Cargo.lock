@@ -219,21 +219,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
-name = "chibi-datalog"
-version = "0.1.0"
-dependencies = [
- "ahash 0.8.11",
- "datalog_rule_macro",
- "datalog_syntax",
- "dbsp",
- "dyn-hash",
- "indexmap 2.1.0",
- "lasso",
- "rkyv",
- "size-of",
-]
-
-[[package]]
 name = "chrono"
 version = "0.4.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -340,20 +325,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "datalog_rule_macro"
+name = "datalog_syntax"
+version = "0.1.0"
+
+[[package]]
+name = "datalog_syntax_macros"
 version = "0.1.0"
 dependencies = [
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "datalog_syntax"
-version = "0.1.0"
-dependencies = [
- "ordered-float",
- "rkyv",
- "size-of",
 ]
 
 [[package]]
@@ -400,12 +380,6 @@ dependencies = [
  "powerfmt",
  "serde",
 ]
-
-[[package]]
-name = "dyn-hash"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a650a461c6a8ff1ef205ed9a2ad56579309853fecefc2423f73dced342f92258"
 
 [[package]]
 name = "educe"
@@ -683,16 +657,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lasso"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4644821e1c3d7a560fe13d842d13f587c07348a1a05d3a797152d41c90c56df2"
-dependencies = [
- "ahash 0.8.11",
- "hashbrown 0.13.2",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -719,6 +683,17 @@ name = "log"
 version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
+
+[[package]]
+name = "materialized-view"
+version = "0.1.0"
+dependencies = [
+ "ahash 0.8.11",
+ "datalog_syntax",
+ "datalog_syntax_macros",
+ "dbsp",
+ "indexmap 2.1.0",
+]
 
 [[package]]
 name = "memchr"

@@ -1,5 +1,5 @@
 extern crate proc_macro;
-
+// This is 100% code gore please don't look :)
 use proc_macro::TokenStream;
 use quote::quote;
 use std::collections::HashMap;
@@ -136,7 +136,6 @@ pub fn rule(input: TokenStream) -> TokenStream {
         Rule {
             head: Atom { terms: vec![#(#head_terms),*], symbol: stringify!(#head_name).to_string() },
             body: vec![#(#body_atoms),*],
-            id: 0
         }
     };
 
@@ -193,7 +192,6 @@ pub fn program(input: TokenStream) -> TokenStream {
             Rule {
                 head: Atom { terms: vec![#(#head_terms),*], symbol: stringify!(#head_name).to_string() },
                 body: vec![#(#body_atoms),*],
-                id: 0
             }
         }
     }).collect();
