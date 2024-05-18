@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::hash::{BuildHasher, Hash, Hasher};
 use ahash::RandomState;
 
@@ -27,15 +28,16 @@ impl<'a, T> From<&Term<'a, T>> for TermIR where T: Hash {
     }
 }
 
-pub type AtomIR = [(bool, u64); 3];
+type AtomData = [Option<Box<dyn Any>>; 3];
+type AtomIR = [(bool, u64); 3];
 
-pub struct Atom { pub(crate) atom_ir: AtomIR, pub(crate) symbol: u64 }
+pub struct Atom { pub(crate) atom_ir: AtomIR, pub(crate) atom_data: AtomData, pub(crate) symbol: u64 }
 
 impl<'a, T> From<(&'a str, (Term<'a, T>,))> for Atom where T: Hash {
     fn from(value: (&'a str, (Term<'a, T>,))) -> Self {
         let first = TermIR::from(&value.1.0);
 
-        return Self { atom_ir: [ first, (false, 0), (false, 0)], symbol: RandomState::new().hash_one(value.0) }
+        return Self { atom_ir: [ first, (false, 0), (false, 0)], atom_data: [ Some(Box::new(value.0)), None, None ], symbol: RandomState::new().hash_one(value.0) }
     }
 }
 
@@ -44,7 +46,7 @@ impl<'a, T, R> From<(&'a str, (Term<'a, T>, Term<'a, R>))> for Atom where T: Has
         let first = TermIR::from(&value.1.0);
         let second = TermIR::from(&value.1.1);
 
-        return Self { atom_ir: [first, second, (false, 0)], symbol: RandomState::new().hash_one(value.0) }
+        return Self { atom_ir: [first, second, (false, 0)], atom_data: [ Some(Box::new(first)), Some(Box::new(second)), None ], symbol: RandomState::new().hash_one(value.0) }
     }
 }
 
@@ -54,7 +56,7 @@ impl<'a, T, R, S> From<(&'a str, (Term<'a, T>, Term<'a, R>, Term<'a, S>))> for A
         let second = TermIR::from(&value.1.1);
         let third = TermIR::from(&value.1.2);
 
-        return Self { atom_ir: [first, second, third], symbol: RandomState::new().hash_one(value.0) }
+        return Self { atom_ir: [first, second, third], atom_data: [ Some(Box::new(first)), Some(Box::new(second)), Some(Box::new(third)) ],symbol: RandomState::new().hash_one(value.0) }
     }
 }
 

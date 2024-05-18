@@ -38,4 +38,7 @@ impl StorageLayer {
 
         false
     }
+    pub fn len(&self) -> usize {
+        self.inner.iter().map(|(_, fact_storage)| fact_storage.len()).sum()
+    }
 }

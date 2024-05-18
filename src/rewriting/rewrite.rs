@@ -1,5 +1,4 @@
 use datalog_syntax::TypedValue;
-use crate::interning::rule::{RuleLocalVariableIdentifier, Substitution};
 use crate::rewriting::atom::{EncodedAtom, TERM_COUNT_BITS, TERM_COUNT_MASK, TERM_KIND_AND_VALUE_MASK, TERM_VALUE_BITS};
 
 pub type EncodedRewrite = u128;
