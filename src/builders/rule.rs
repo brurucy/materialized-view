@@ -24,8 +24,8 @@ impl<T> From<&Term<T>> for TermIR where T: Hash {
         let rs = new_random_state();
 
         match value {
-            Term::Var(name) => (true, rs.hash_one(&name)),
-            Term::Const(value) => (false, rs.hash_one(&value))
+            Term::Var(name) => (true, rs.hash_one(name.as_str())),
+            Term::Const(value) => (false, rs.hash_one(value))
         }
     }
 }
@@ -43,22 +43,22 @@ impl<T: 'static> From<(&str, (Term<T>,))> for Atom where T: Hash {
     }
 }
 
-impl<T, R> From<(&str, (Term<T>, Term<R>))> for Atom where T: Hash, R: Hash {
+impl<T: 'static, R: 'static> From<(&str, (Term<T>, Term<R>))> for Atom where T: Hash, R: Hash {
     fn from(value: (&str, (Term<T>, Term<R>))) -> Self {
         let first = TermIR::from(&value.1.0);
         let second = TermIR::from(&value.1.1);
 
-        return Self { atom_ir: [first, second, (false, 0)], atom_data: [ Some(Box::new(first)), Some(Box::new(second)), None ], symbol: new_random_state().hash_one(value.0) }
+        return Self { atom_ir: [first, second, (false, 0)], atom_data: [ Some(Box::new(value.1.0)), Some(Box::new(value.1.1)), None ], symbol: new_random_state().hash_one(value.0) }
     }
 }
 
-impl<T, R, S> From<(&str, (Term<T>, Term<R>, Term<S>))> for Atom where T: Hash, R: Hash, S: Hash {
+impl<T: 'static, R: 'static, S: 'static> From<(&str, (Term<T>, Term<R>, Term<S>))> for Atom where T: Hash, R: Hash, S: Hash {
     fn from(value: (&str, (Term<T>, Term<R>, Term<S>))) -> Self {
         let first = TermIR::from(&value.1.0);
         let second = TermIR::from(&value.1.1);
         let third = TermIR::from(&value.1.2);
 
-        return Self { atom_ir: [first, second, third], atom_data: [ Some(Box::new(first)), Some(Box::new(second)), Some(Box::new(third)) ],symbol: new_random_state().hash_one(value.0) }
+        return Self { atom_ir: [first, second, third], atom_data: [ Some(Box::new(value.1.0)), Some(Box::new(value.1.1)), Some(Box::new(value.1.2)) ], symbol: new_random_state().hash_one(value.0) }
     }
 }
 
@@ -126,7 +126,7 @@ impl<'a> From<datalog_syntax::Rule> for Rule {
         let rs = new_random_state();
 
         let head_symbol = value.head.symbol.as_str();
-        let mut head_term_ir: AtomIR = Default::default();
+        let mut head_term_ir: AtomIR = [(false, 0); 3];
         let mut head_term_data: AtomData = Default::default();
 
         value
@@ -151,7 +151,7 @@ impl<'a> From<datalog_syntax::Rule> for Rule {
             .into_iter()
             .map(|atom| {
                 let current_atom_symbol = atom.symbol.as_str();
-                let mut current_atom_term_ir: AtomIR = Default::default();
+                let mut current_atom_term_ir: AtomIR = [(false, 0); 3];
                 let mut current_atom_term_data: AtomData = Default::default();
 
                 atom

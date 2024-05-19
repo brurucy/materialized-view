@@ -104,7 +104,7 @@ impl MaterializedDatalogView {
             .map(|interned_constant_terms| {
                 let resolved_interned_constant_term = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
 
-                (resolved_interned_constant_term, )
+                (resolved_interned_constant_term,)
             }))
     }
     pub fn query_binary<'a, T: 'static, R: 'static>(
@@ -131,6 +131,31 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two)
             }))
     }
+    pub fn query_ternary<'a, T: 'static, R: 'static, S: 'static>(
+        &self,
+        relation_symbol: RelationSymbol,
+        goal: impl Into<Goal>
+    ) -> Result<impl Iterator<Item=(&T, &R, &S)>, String> {
+        if !self.safe() {
+            return Err("polling is needed to obtain correct results".to_string());
+        }
+
+        let goal = goal.into();
+        let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
+
+        Ok(fact_storage
+            .iter()
+            .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
+            .map(|interned_constant_terms| {
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_hash::<R>(interned_constant_terms[1] as u64).unwrap();
+                let resolved_interned_constant_term_three = self.internment_layer.resolve_hash::<S>(interned_constant_terms[2] as u64).unwrap();
+
+                (resolved_interned_constant_term_one, resolved_interned_constant_term_two, resolved_interned_constant_term_three)
+            }))
+    }
     fn step(&mut self) {
         self.compute_layer.step();
     }
@@ -149,7 +174,6 @@ impl MaterializedDatalogView {
         let mut materialized_datalog_view = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, rs: new_random_state(), safe: true };
 
         program.inner.into_iter().for_each(|rule| {
-            let rule: Rule = rule.into();
             materialized_datalog_view.push_rule(rule);
         });
 
@@ -194,7 +218,7 @@ mod tests {
 
         assert_eq!(materialized_datalog_view.len(), 3);
         materialized_datalog_view.poll();
-        assert_eq!(materialized_datalog_view.len(), 6);
+        assert_eq!(materialized_datalog_view.len(), 9);
 
         let actual_all: HashSet<Edge> =
             materialized_datalog_view
@@ -235,9 +259,9 @@ mod tests {
             assert!(materialized_datalog_view.contains("tc", *fact).unwrap());
         });
 
-        // Update
         materialized_datalog_view.push_fact("e", (4, 5));
         assert!(!materialized_datalog_view.safe());
+        // Update
         materialized_datalog_view.poll();
         assert!(materialized_datalog_view.safe());
 

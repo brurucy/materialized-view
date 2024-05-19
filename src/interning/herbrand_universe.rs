@@ -1,34 +1,39 @@
 use std::any::Any;
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use crate::builders::fact::Fact;
 use crate::builders::goal::Goal;
 use crate::builders::rule::{Atom, Rule};
-use crate::engine::storage::InternedConstantTerms;
+use crate::engine::storage::{InternedConstantTerms, RelationIdentifier};
 
 const MAXIMUM_LEN: usize = 1 << 19;
 
-pub type Interner = IndexMap<u64, Box<dyn Any>>;
+type ConstantInterner = IndexMap<u64, Box<dyn Any>>;
+type VariableInterner = IndexSet<u64>;
 
 #[derive(Default)]
 pub struct InternmentLayer {
-    inner: Interner
+    constant_interner: ConstantInterner,
+    variable_interner: VariableInterner
 }
 
 pub type InternedTerm = usize;
 pub type InternedTerms = [(bool, InternedTerm); 3];
-pub type InternedAtom = (u64, InternedTerms);
-pub type InternedRule = (u64, InternedAtom, Vec<InternedAtom>);
+pub type InternedAtom = (RelationIdentifier, InternedTerms);
+pub type InternedRule = (RelationIdentifier, InternedAtom, Vec<InternedAtom>);
 
 impl InternmentLayer {
     pub fn resolve_hash<T: 'static>(&self, hash: u64) -> Option<&T> {
-        if let Some(hash_value) = self.inner.get(&hash) {
+        if let Some(hash_value) = self.constant_interner.get(&hash) {
             return Some(hash_value.downcast_ref::<T>().unwrap())
         }
 
         None
     }
-    pub fn push(&mut self, hash: u64, data: Box<dyn Any>) -> usize {
-        self.inner.insert_full(hash, data).0 + 1
+    pub fn push_constant(&mut self, hash: u64, data: Box<dyn Any>) -> usize {
+        self.constant_interner.insert_full(hash, data).0 + 1
+    }
+    pub fn push_variable(&mut self, hash: u64) -> usize {
+        self.variable_interner.insert_full(hash).0 + 1
     }
     pub fn intern_fact(&mut self, fact: Fact) -> InternedConstantTerms {
         let mut interned_constant_terms = [0; 3];
@@ -36,17 +41,17 @@ impl InternmentLayer {
 
         let first_key = *fact.fact_ir.get(0).unwrap();
         if let Some(first_value) = fact.fact_data[0].take() {
-            interned_constant_terms[0] = self.push(first_key, first_value);
+            interned_constant_terms[0] = self.push_constant(first_key, first_value);
         }
 
         let second_key = *fact.fact_ir.get(1).unwrap();
         if let Some(second_value) = fact.fact_data[1].take() {
-            interned_constant_terms[1] = self.push(second_key, second_value);
+            interned_constant_terms[1] = self.push_constant(second_key, second_value);
         }
         
         let third_key = *fact.fact_ir.get(2).unwrap();
         if let Some(third_value) = fact.fact_data[2].take() {
-            interned_constant_terms[2] = self.push(third_key, third_value);
+            interned_constant_terms[2] = self.push_constant(third_key, third_value);
         }
 
         interned_constant_terms
@@ -55,30 +60,30 @@ impl InternmentLayer {
         let mut interned_atom_ir = [ (false, 0); 3 ];
         let mut atom = atom;
 
-        if let Some(first_value) = atom.atom_data[0].take() {
-            let first_key = atom.atom_ir[0];
+        let first_key = atom.atom_ir[0];
+        if first_key.1 != 0 {
             if !first_key.0 {
-                interned_atom_ir[0] = (false, self.push(first_key.1, first_value));
+                interned_atom_ir[0] = (false, self.push_constant(first_key.1, atom.atom_data[0].take().unwrap()));
             } else {
-                interned_atom_ir[0] = (true, first_key.1 as usize)
+                interned_atom_ir[0] = (true, self.push_variable(first_key.1))
             }
         }
 
-        if let Some(second_value) = atom.atom_data[1].take() {
-            let second_key = atom.atom_ir[1];
+        let second_key = atom.atom_ir[1];
+        if second_key.1 != 0 {
             if !second_key.0 {
-                interned_atom_ir[1] = (false, self.push(second_key.1, second_value));
+                interned_atom_ir[1] = (false, self.push_constant(second_key.1, atom.atom_data[1].take().unwrap()));
             } else {
-                interned_atom_ir[0] = (true, second_key.1 as usize)
+                interned_atom_ir[1] = (true, self.push_variable(second_key.1));
             }
         }
 
-        if let Some(third_value) = atom.atom_data[2].take() {
-            let third_key = atom.atom_ir[2];
+        let third_key = atom.atom_ir[2];
+        if third_key.1 != 0 {
             if !third_key.0 {
-                interned_atom_ir[2] = (false, self.push(third_key.1, third_value));
+                interned_atom_ir[2] = (false, self.push_constant(third_key.1, atom.atom_data[2].take().unwrap()));
             } else {
-                interned_atom_ir[2] = (true, third_key.1 as usize);
+                interned_atom_ir[2] = (true, self.push_variable(third_key.1));
             }
         }
 
@@ -94,7 +99,7 @@ impl InternmentLayer {
                 break;
             }
 
-            if let Some(resolved_constant) = self.inner.get_index_of(&fact.fact_ir[i]) {
+            if let Some(resolved_constant) = self.constant_interner.get_index_of(&fact.fact_ir[i]) {
                 resolved_fact[i] = resolved_constant;
             } else {
                 return None
@@ -107,7 +112,7 @@ impl InternmentLayer {
         let mut resolved_partial_fact = [0; 3];
         for i in 0..3usize {
             if goal.goal_ir[i] != 0 {
-                if let Some(resolved_constant) = self.inner.get_index_of(&goal.goal_ir[i]) {
+                if let Some(resolved_constant) = self.constant_interner.get_index_of(&goal.goal_ir[i]) {
                     resolved_partial_fact[i] = resolved_constant;
                 } else {
                     return None
@@ -125,7 +130,7 @@ impl InternmentLayer {
                     break;
                 }
 
-                if let Some(resolved_constant) = self.inner.get_index_of(&atom.atom_ir[i].1) {
+                if let Some(resolved_constant) = self.constant_interner.get_index_of(&atom.atom_ir[i].1) {
                     resolved_atom[i] = (false, resolved_constant);
                     continue;
                 } else {
