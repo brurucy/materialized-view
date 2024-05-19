@@ -2,6 +2,7 @@ use ahash::RandomState;
 use datalog_syntax::Program;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::builders::fact::Fact;
+use crate::builders::goal::{Goal, pattern_match};
 use crate::builders::rule::Rule;
 use crate::engine::compute::ComputeLayer;
 use crate::interning::herbrand_universe::InternmentLayer;
@@ -10,14 +11,15 @@ pub struct MaterializedDatalogView {
     compute_layer: ComputeLayer,
     internment_layer: InternmentLayer,
     storage_layer: StorageLayer,
-    // Translation layer?
     rs: RandomState,
     safe: bool,
 }
 
+pub type RelationSymbol<'a> = &'a str;
+
 impl MaterializedDatalogView {
-    pub fn push_fact(&mut self, relation: &str, fact: impl Into<Fact>) -> bool {
-        let hashed_relation_symbol = self.rs.hash_one(&relation);
+    pub fn push_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         if let Some(fact_storage) = self.storage_layer.inner.get_mut(&hashed_relation_symbol) {
             let interned_fact = self.internment_layer.intern_fact(fact.into());
 
@@ -29,8 +31,8 @@ impl MaterializedDatalogView {
 
         false
     }
-    pub fn retract_fact(&mut self, relation: &str, fact: impl Into<Fact>) -> bool {
-        let hashed_relation_symbol = self.rs.hash_one(&relation);
+    pub fn retract_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         if let Some(fact_storage) = self.storage_layer.inner.get_mut(&hashed_relation_symbol) {
             let interned_fact = self.internment_layer.intern_fact(fact.into());
 
@@ -65,19 +67,58 @@ impl MaterializedDatalogView {
     }
     pub fn contains(
         &self,
-        relation: &str,
+        relation_symbol: RelationSymbol,
         fact: impl Into<Fact>,
     ) -> Result<bool, String> {
         if !self.safe() {
             return Err("polling is needed to obtain correct results".to_string());
         }
 
-        let hashed_relation_symbol = self.rs.hash_one(&relation);
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         if let Some(interned_fact) = self.internment_layer.resolve_fact(fact.into()) {
             return Ok(self.storage_layer.contains(&hashed_relation_symbol, &interned_fact))
         }
 
         Ok(false)
+    }
+    pub fn query_unary<'a, T: 'static>(
+        &self,
+        relation_symbol: RelationSymbol,
+        goal: impl Into<Goal>
+    ) -> impl Iterator<Item=(&T, )> {
+        let goal = goal.into();
+        let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
+
+        fact_storage
+            .iter()
+            .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
+            .map(|interned_constant_terms| {
+                let resolved_interned_constant_term = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
+
+                (resolved_interned_constant_term, )
+            })
+    }
+    pub fn query_binary<'a, T: 'static, R: 'static>(
+        &self,
+        relation_symbol: RelationSymbol,
+        goal: impl Into<Goal>
+    ) -> impl Iterator<Item=(&T, &R)> {
+        let goal = goal.into();
+        let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
+
+        fact_storage
+            .iter()
+            .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
+            .map(|interned_constant_terms| {
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_hash::<R>(interned_constant_terms[1] as u64).unwrap();
+
+                (resolved_interned_constant_term_one, resolved_interned_constant_term_two)
+            })
     }
     fn step(&mut self) {
         self.compute_layer.step();
@@ -119,7 +160,10 @@ mod tests {
     use datalog_syntax_macros::program;
     use datalog_syntax::*;
     use std::collections::HashSet;
-    use datalog_syntax::build_query;
+    use crate::builders::goal::ANY_VALUE;
+
+    type NodeIndex = usize;
+    type Edge = (NodeIndex, NodeIndex);
 
     #[test]
     fn integration_test_insertions_only() {
@@ -141,15 +185,12 @@ mod tests {
 
         materialized_datalog_view.poll();
 
-        // This query reads as: "Get all in tc with any values in any positions"
-        let all = build_query!(tc(_, _));
-        // And this one as: "Get all in tc with the first term being a"
-        // There also is a QueryBuilder, if you do not want to use a macro.
-        let all_from_a = build_query!(tc(1, _));
-
-        let actual_all: HashSet<AnonymousGroundAtom> =
-            materialized_datalog_view.query(&all).unwrap().collect();
-        let expected_all: HashSet<AnonymousGroundAtom> = vec![
+        let actual_all: HashSet<Edge> =
+            materialized_datalog_view
+                .query_binary("tc", (ANY_VALUE, ANY_VALUE))
+                .map(|(x, y)| (*x, *y))
+                .collect();
+        let expected_all: HashSet<Edge> = vec![
             (1, 2),
             (2, 3),
             (3, 4),
@@ -163,9 +204,9 @@ mod tests {
         .collect();
         assert_eq!(expected_all, actual_all);
 
-        let actual_all_from_a: HashSet<AnonymousGroundAtom> =
-            materialized_datalog_view.query(&all_from_a).unwrap().collect();
-        let expected_all_from_a: HashSet<AnonymousGroundAtom> = vec![
+        let actual_all_from_a: HashSet<Edge> =
+            materialized_datalog_view.query_binary("tc", (Some(1), ANY_VALUE)).map(|(x, y)| (*x, *y)).collect();
+        let expected_all_from_a: HashSet<Edge> = vec![
             (1, 2),
             (1, 3),
             (1, 4),
@@ -175,11 +216,11 @@ mod tests {
         assert_eq!(expected_all_from_a, actual_all_from_a);
 
         expected_all.iter().for_each(|fact| {
-            assert!(materialized_datalog_view.contains("tc", fact).unwrap());
+            assert!(materialized_datalog_view.contains("tc", *fact).unwrap());
         });
 
         expected_all_from_a.iter().for_each(|fact| {
-            assert!(materialized_datalog_view.contains("tc", fact).unwrap());
+            assert!(materialized_datalog_view.contains("tc", *fact).unwrap());
         });
 
         // Update
@@ -188,9 +229,12 @@ mod tests {
         materialized_datalog_view.poll();
         assert!(materialized_datalog_view.safe());
 
-        let actual_all_after_update: HashSet<AnonymousGroundAtom> =
-            materialized_datalog_view.query(&all).unwrap().collect();
-        let expected_all_after_update: HashSet<AnonymousGroundAtom> = vec![
+        let actual_all_after_update: HashSet<Edge> =
+            materialized_datalog_view
+                .query_binary("tc", (ANY_VALUE, ANY_VALUE))
+                .map(|(x, y)| (*x, *y))
+                .collect();
+        let expected_all_after_update: HashSet<Edge> = vec![
             (1, 2),
             (2, 3),
             (3, 4),
@@ -209,12 +253,11 @@ mod tests {
         .collect();
         assert_eq!(expected_all_after_update, actual_all_after_update);
 
-        let actual_all_from_a_after_update: HashSet<AnonymousGroundAtom> = materialized_datalog_view
-            .query(&all_from_a)
-            .unwrap()
-            .into_iter()
+        let actual_all_from_a_after_update: HashSet<Edge> = materialized_datalog_view
+            .query_binary("tc", (Some(1), ANY_VALUE))
+            .map(|(x, y)| (*x, *y))
             .collect();
-        let expected_all_from_a_after_update: HashSet<AnonymousGroundAtom> = vec![
+        let expected_all_from_a_after_update: HashSet<Edge> = vec![
             (1, 2),
             (1, 3),
             (1, 4),
@@ -229,10 +272,6 @@ mod tests {
     }
     #[test]
     fn integration_test_deletions() {
-        // Queries. The explanation is in the test above
-        let all = build_query!(tc(_, _));
-        let all_from_a = build_query!(tc(1, _));
-
         let tc_program = program! {
             tc(?x, ?y) <- [e(?x, ?y)],
             tc(?x, ?z) <- [tc(?x, ?y), tc(?y, ?z)],
@@ -254,9 +293,9 @@ mod tests {
 
         runtime.poll();
 
-        let actual_all: HashSet<AnonymousGroundAtom> =
-            runtime.query(&all).unwrap().collect();
-        let expected_all: HashSet<AnonymousGroundAtom> = vec![
+        let actual_all: HashSet<Edge> =
+            runtime.query_binary("tc", (ANY_VALUE, ANY_VALUE)).map(|(x, y)| (*x, *y)).collect();
+        let expected_all: HashSet<Edge> = vec![
             (1, 2),
             (1, 5),
             (2, 3),
@@ -275,12 +314,11 @@ mod tests {
         .collect();
         assert_eq!(expected_all, actual_all);
 
-        let actual_all_from_a: HashSet<_> = runtime
-            .query(&all_from_a)
-            .unwrap()
-            .into_iter()
+        let actual_all_from_a: HashSet<Edge> = runtime
+            .query_binary("tc", (Some(1), ANY_VALUE))
+            .map(|(x, y)| (*x, *y))
             .collect();
-        let expected_all_from_a: HashSet<_> = vec![
+        let expected_all_from_a: HashSet<Edge> = vec![
             (1, 2),
             (1, 3),
             (1, 4),
@@ -291,15 +329,14 @@ mod tests {
         assert_eq!(expected_all_from_a, actual_all_from_a);
 
         // Update
-        // Point removals are a bit annoying, since they incur creating a query.
         runtime.retract_fact("e", (4, 5));
         assert!(!runtime.safe());
         runtime.poll();
         assert!(runtime.safe());
 
-        let actual_all_after_update: HashSet<AnonymousGroundAtom> =
-            runtime.query(&all).unwrap().collect();
-        let expected_all_after_update: HashSet<AnonymousGroundAtom> = vec![
+        let actual_all_after_update: HashSet<Edge> =
+            runtime.query_binary("tc", (ANY_VALUE, ANY_VALUE)).map(|(x, y)| (*x, *y)).collect();
+        let expected_all_after_update: HashSet<Edge> = vec![
             (1, 2),
             (2, 3),
             (3, 4),
@@ -315,12 +352,11 @@ mod tests {
         .collect();
         assert_eq!(expected_all_after_update, actual_all_after_update);
 
-        let actual_all_from_a_after_update: HashSet<_> = runtime
-            .query(&all_from_a)
-            .unwrap()
-            .into_iter()
+        let actual_all_from_a_after_update: HashSet<Edge> = runtime
+            .query_binary("tc", (Some(1), ANY_VALUE))
+            .map(|(x, y)| (*x, *y))
             .collect();
-        let expected_all_from_a_after_update: HashSet<_> = vec![
+        let expected_all_from_a_after_update: HashSet<Edge> = vec![
             (1, 2),
             (1, 3),
             (1, 4),

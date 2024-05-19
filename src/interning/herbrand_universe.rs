@@ -1,6 +1,7 @@
 use std::any::Any;
 use indexmap::IndexMap;
 use crate::builders::fact::Fact;
+use crate::builders::goal::Goal;
 use crate::builders::rule::{Atom, Rule};
 use crate::engine::storage::InternedConstantTerms;
 
@@ -13,53 +14,73 @@ pub struct InternmentLayer {
     inner: Interner
 }
 
-pub type InternedTerms = [(bool, usize); 3];
+pub type InternedTerm = usize;
+pub type InternedTerms = [(bool, InternedTerm); 3];
 pub type InternedAtom = (u64, InternedTerms);
 pub type InternedRule = (u64, InternedAtom, Vec<InternedAtom>);
 
 impl InternmentLayer {
+    pub fn resolve_hash<T: 'static>(&self, hash: u64) -> Option<&T> {
+        if let Some(hash_value) = self.inner.get(&hash) {
+            return Some(hash_value.downcast_ref::<T>().unwrap())
+        }
+
+        None
+    }
     pub fn push(&mut self, hash: u64, data: Box<dyn Any>) -> usize {
-        self.inner.insert_full(hash, data).0
+        self.inner.insert_full(hash, data).0 + 1
     }
     pub fn intern_fact(&mut self, fact: Fact) -> InternedConstantTerms {
         let mut interned_constant_terms = [0; 3];
+        let mut fact = fact;
 
-        let first_key = fact.fact_ir[0];
-        let potential_first_value = fact.fact_data[0];
-        if let Some(first_value) = potential_first_value {
+        let first_key = *fact.fact_ir.get(0).unwrap();
+        if let Some(first_value) = fact.fact_data[0].take() {
             interned_constant_terms[0] = self.push(first_key, first_value);
         }
 
-        let second_key = fact.fact_ir[1];
-        let potential_second_value = fact.fact_data[1];
-        if let Some(second_value) = potential_second_value {
+        let second_key = *fact.fact_ir.get(1).unwrap();
+        if let Some(second_value) = fact.fact_data[1].take() {
             interned_constant_terms[1] = self.push(second_key, second_value);
         }
         
-        let third_key = fact.fact_ir[2];
-        let potential_third_value = fact.fact_data[2];
-        if let Some(third_value) = potential_third_value {
+        let third_key = *fact.fact_ir.get(2).unwrap();
+        if let Some(third_value) = fact.fact_data[2].take() {
             interned_constant_terms[2] = self.push(third_key, third_value);
         }
 
         interned_constant_terms
     }
     pub fn intern_atom(&mut self, atom: Atom) -> InternedAtom {
-        let first = atom.atom_ir[0];
-        let second = atom.atom_ir[1];
-        let third = atom.atom_ir[2];
+        let mut interned_atom_ir = [ (false, 0); 3 ];
+        let mut atom = atom;
 
-        let interned_first = if first.0 { (true, first.1 as usize) } else {
-            (false, self.push(first.1)) 
-        };
-        let interned_second = if second.0 { (true, second.1 as usize) } else {
-            (false, self.push(second.1)) 
-        };
-        let interned_third = if third.0 { (true, third.1 as usize) } else {
-            (false, self.push(third.1)) 
-        };
+        if let Some(first_value) = atom.atom_data[0].take() {
+            let first_key = atom.atom_ir[0];
+            if !first_key.0 {
+                interned_atom_ir[0] = (false, self.push(first_key.1, first_value));
+            } else {
+                interned_atom_ir[0] = (true, first_key.1 as usize)
+            }
+        }
 
-        let interned_atom_ir = [ interned_first, interned_second, interned_third ];
+        if let Some(second_value) = atom.atom_data[1].take() {
+            let second_key = atom.atom_ir[1];
+            if !second_key.0 {
+                interned_atom_ir[1] = (false, self.push(second_key.1, second_value));
+            } else {
+                interned_atom_ir[0] = (true, second_key.1 as usize)
+            }
+        }
+
+        if let Some(third_value) = atom.atom_data[2].take() {
+            let third_key = atom.atom_ir[2];
+            if !third_key.0 {
+                interned_atom_ir[2] = (false, self.push(third_key.1, third_value));
+            } else {
+                interned_atom_ir[2] = (true, third_key.1 as usize);
+            }
+        }
 
         (atom.symbol, interned_atom_ir)
     }
@@ -69,6 +90,10 @@ impl InternmentLayer {
     pub fn resolve_fact(&self, fact: Fact) -> Option<InternedConstantTerms> {
         let mut resolved_fact = [0; 3];
         for i in 0..3usize {
+            if fact.fact_ir[i] == 0 {
+                break;
+            }
+
             if let Some(resolved_constant) = self.inner.get_index_of(&fact.fact_ir[i]) {
                 resolved_fact[i] = resolved_constant;
             } else {
@@ -78,10 +103,28 @@ impl InternmentLayer {
 
         Some(resolved_fact)
     }
+    pub fn resolve_goal(&self, goal: Goal) -> Option<InternedConstantTerms> {
+        let mut resolved_partial_fact = [0; 3];
+        for i in 0..3usize {
+            if goal.goal_ir[i] != 0 {
+                if let Some(resolved_constant) = self.inner.get_index_of(&goal.goal_ir[i]) {
+                    resolved_partial_fact[i] = resolved_constant;
+                } else {
+                    return None
+                };
+            }
+        }
+
+        Some(resolved_partial_fact)
+    }
     pub fn resolve_atom(&self, atom: Atom) -> Option<InternedAtom> {
         let mut resolved_atom = [(false, 0); 3];
         for i in 0..3usize {
             if !atom.atom_ir[i].0 {
+                if !atom.atom_ir[i].1 == 0 {
+                    break;
+                }
+
                 if let Some(resolved_constant) = self.inner.get_index_of(&atom.atom_ir[i].1) {
                     resolved_atom[i] = (false, resolved_constant);
                     continue;
@@ -114,7 +157,6 @@ impl InternmentLayer {
     }
     pub fn new() -> Self {
         let mut inner: Interner = Default::default();
-        inner.insert(0);
 
         Self { inner }
     }

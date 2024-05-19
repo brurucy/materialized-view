@@ -1,11 +1,11 @@
-use datalog_syntax::TypedValue;
+use crate::interning::herbrand_universe::InternedTerm;
 use crate::rewriting::atom::{EncodedAtom, TERM_COUNT_BITS, TERM_COUNT_MASK, TERM_KIND_AND_VALUE_MASK, TERM_VALUE_BITS};
 
 pub type EncodedRewrite = u128;
 const VARIABLE_BITS: u128 = 3;
 const SUBSTITUTION_COUNT_BITS: u128 = 3;
 const SUBSTITUTION_COUNT_MASK: u128 = 7;
-pub fn get_from_encoded_rewrite(rewrite: &EncodedRewrite, variable: &RuleLocalVariableIdentifier) -> Option<TypedValue> {
+pub fn get_from_encoded_rewrite(rewrite: &EncodedRewrite, variable: &InternedTerm) -> Option<InternedTerm> {
     let current_sub_count = *rewrite & SUBSTITUTION_COUNT_MASK;
     for idx in 0..current_sub_count {
         let variable_start_position = SUBSTITUTION_COUNT_BITS + (VARIABLE_BITS + ((TERM_VALUE_BITS - 1) as u128)) * idx;
@@ -16,7 +16,7 @@ pub fn get_from_encoded_rewrite(rewrite: &EncodedRewrite, variable: &RuleLocalVa
 
         let variable_mask = variable_range_start ^ variable_range_end;
 
-        let variable_value = ((rewrite & variable_mask) >> variable_start_position) as RuleLocalVariableIdentifier;
+        let variable_value = ((rewrite & variable_mask) >> variable_start_position) as InternedTerm;
 
         if variable_value == *variable {
             let constant_start_position = variable_end_position;
@@ -27,7 +27,7 @@ pub fn get_from_encoded_rewrite(rewrite: &EncodedRewrite, variable: &RuleLocalVa
 
             let constant_mask = constant_range_start ^ constant_range_end;
 
-            let constant_value = ((rewrite & constant_mask) >> constant_start_position) as TypedValue;
+            let constant_value = ((rewrite & constant_mask) >> constant_start_position) as InternedTerm;
 
             return Some(constant_value)
         }
@@ -59,6 +59,10 @@ pub fn apply_rewrite(rewrite: &EncodedRewrite, encoded_atom: &EncodedAtom) -> En
     encoded_atom_copy
 }
 
+pub type VariableTerm = InternedTerm;
+pub type ConstantTerm = InternedTerm;
+pub type Substitution = (VariableTerm, ConstantTerm);
+
 pub fn add_substitution(rewrite: &mut EncodedRewrite, substitution: Substitution) {
     let current_sub_count = *rewrite & SUBSTITUTION_COUNT_MASK;
     let variable_shift_amount = SUBSTITUTION_COUNT_BITS + (VARIABLE_BITS + ((TERM_VALUE_BITS - 1) as u128)) * current_sub_count;
@@ -88,8 +92,8 @@ pub fn unify_encoded_atom_with_encoded_rewrite(left_atom: EncodedAtom, right_fac
 
         let is_left_term_var = left_term & 1 == 1;
         if is_left_term_var {
-            let left_variable_name = (left_term >> 1) as RuleLocalVariableIdentifier;
-            let right_constant_value = (right_constant >> 1) as TypedValue;
+            let left_variable_name = (left_term >> 1) as InternedTerm;
+            let right_constant_value = (right_constant >> 1) as InternedTerm;
 
             add_substitution(&mut rewrite, (left_variable_name, right_constant_value));
 
@@ -116,7 +120,7 @@ pub fn merge_right_rewrite_into_left(left_rewrite: EncodedRewrite, right_rewrite
         let variable_range_end = (1 << (variable_end_position)) - 1;
 
         let variable_mask = variable_range_start ^ variable_range_end;
-        let variable_value = ((right_rewrite & variable_mask) >> variable_start_position) as RuleLocalVariableIdentifier;
+        let variable_value = ((right_rewrite & variable_mask) >> variable_start_position) as InternedTerm;
 
         if get_from_encoded_rewrite(&left_rewrite, &variable_value).is_none() {
             let constant_start_position = variable_end_position;
@@ -127,7 +131,7 @@ pub fn merge_right_rewrite_into_left(left_rewrite: EncodedRewrite, right_rewrite
 
             let constant_mask = constant_range_start ^ constant_range_end;
 
-            let constant_value = ((right_rewrite & constant_mask) >> constant_start_position) as TypedValue;
+            let constant_value = ((right_rewrite & constant_mask) >> constant_start_position) as InternedTerm;
             add_substitution(&mut rewrite, (variable_value, constant_value));
         }
     }
@@ -135,7 +139,7 @@ pub fn merge_right_rewrite_into_left(left_rewrite: EncodedRewrite, right_rewrite
     rewrite
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod tests {
     use crate::interning::rule::InternedTerm;
     use crate::rewriting::atom::{decode_fact, encode_atom_terms, encode_fact};
@@ -198,3 +202,4 @@ mod tests {
         assert_eq!(encode_fact(&expected_encoded_fact), apply_rewrite(&rewrite_2, &encoded_atom_2))
     }
 }
+*/

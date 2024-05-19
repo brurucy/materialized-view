@@ -1,6 +1,8 @@
 use indexmap::{IndexMap, IndexSet};
+use crate::interning::herbrand_universe::InternedTerm;
+
 pub type RelationIdentifier = u64;
-pub type InternedConstantTerms = [usize; 3];
+pub type InternedConstantTerms = [InternedTerm; 3];
 pub type FactStorage = IndexSet<InternedConstantTerms>;
 #[derive(Default)]
 pub struct StorageLayer {

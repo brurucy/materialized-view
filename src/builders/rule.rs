@@ -1,24 +1,26 @@
 use std::any::Any;
 use std::hash::{BuildHasher, Hash, Hasher};
 use ahash::RandomState;
+use datalog_syntax::TypedValue;
 
-pub enum Term<'a, T: Hash> {
-    Var(&'a str),
+pub enum Term<T: Hash> {
+    Var(String),
     Const(T)
 }
 
-pub fn Var<'a>(name: &'a str) -> Term<&'a str> {
-    return Term::Var(name)
+pub fn Var(name: &str) -> Term<String> {
+    return Term::Var(name.to_string())
 }
 
-pub fn Const<'a, T: Hash>(value: T) -> Term<'a, T> {
+pub fn Const<T: Hash>(value: T) -> Term<T> {
     return Term::Const(value)
 }
 
+type TermData = Option<Box<dyn Any>>;
 type TermIR = (bool, u64);
 
-impl<'a, T> From<&Term<'a, T>> for TermIR where T: Hash {
-    fn from(value: &Term<'a, T>) -> Self {
+impl<T> From<&Term<T>> for TermIR where T: Hash {
+    fn from(value: &Term<T>) -> Self {
         let rs = RandomState::new();
 
         match value {
@@ -28,21 +30,21 @@ impl<'a, T> From<&Term<'a, T>> for TermIR where T: Hash {
     }
 }
 
-type AtomData = [Option<Box<dyn Any>>; 3];
+type AtomData = [TermData; 3];
 type AtomIR = [(bool, u64); 3];
 
 pub struct Atom { pub(crate) atom_ir: AtomIR, pub(crate) atom_data: AtomData, pub(crate) symbol: u64 }
 
-impl<'a, T> From<(&'a str, (Term<'a, T>,))> for Atom where T: Hash {
-    fn from(value: (&'a str, (Term<'a, T>,))) -> Self {
+impl<T: 'static> From<(&str, (Term<T>,))> for Atom where T: Hash {
+    fn from(value: (&str, (Term<T>,))) -> Self {
         let first = TermIR::from(&value.1.0);
 
-        return Self { atom_ir: [ first, (false, 0), (false, 0)], atom_data: [ Some(Box::new(value.0)), None, None ], symbol: RandomState::new().hash_one(value.0) }
+        return Self { atom_ir: [ first, (false, 0), (false, 0)], atom_data: [ Some(Box::new(value.1.0)), None, None ], symbol: RandomState::new().hash_one(value.0) }
     }
 }
 
-impl<'a, T, R> From<(&'a str, (Term<'a, T>, Term<'a, R>))> for Atom where T: Hash, R: Hash {
-    fn from(value: (&'a str, (Term<'a, T>, Term<'a, R>))) -> Self {
+impl<T, R> From<(&str, (Term<T>, Term<R>))> for Atom where T: Hash, R: Hash {
+    fn from(value: (&str, (Term<T>, Term<R>))) -> Self {
         let first = TermIR::from(&value.1.0);
         let second = TermIR::from(&value.1.1);
 
@@ -50,8 +52,8 @@ impl<'a, T, R> From<(&'a str, (Term<'a, T>, Term<'a, R>))> for Atom where T: Has
     }
 }
 
-impl<'a, T, R, S> From<(&'a str, (Term<'a, T>, Term<'a, R>, Term<'a, S>))> for Atom where T: Hash, R: Hash, S: Hash {
-    fn from(value: (&'a str, (Term<'a, T>, Term<'a, R>, Term<'a, S>))) -> Self {
+impl<T, R, S> From<(&str, (Term<T>, Term<R>, Term<S>))> for Atom where T: Hash, R: Hash, S: Hash {
+    fn from(value: (&str, (Term<T>, Term<R>, Term<S>))) -> Self {
         let first = TermIR::from(&value.1.0);
         let second = TermIR::from(&value.1.1);
         let third = TermIR::from(&value.1.2);
@@ -77,33 +79,96 @@ impl From<(Atom, Vec<Atom>)> for Rule {
     }
 }
 
-impl<'a, T> From<datalog_syntax::Term> for Term<'a, T> where T: Hash {
-    fn from(value: datalog_syntax::Term) -> Self {
-        match value {
-            datalog_syntax::Term::Variable(name) => { Var(&name) }
-            datalog_syntax::Term::Constant(value) => { Const(value) }
+struct PositiveDatalogTerm (datalog_syntax::Term);
+
+impl PositiveDatalogTerm {
+    pub fn to_datalog_syntax_term(self) -> datalog_syntax::Term {
+        self.0
+    }
+}
+
+impl From<PositiveDatalogTerm> for TermIR {
+    fn from(value: PositiveDatalogTerm) -> Self {
+        match value.to_datalog_syntax_term() {
+            datalog_syntax::Term::Variable(name) => {
+                (&Var(name.as_str())).into()
+            }
+            datalog_syntax::Term::Constant(typed_value) => {
+                match typed_value {
+                    TypedValue::Str(inner) => { (&Const(inner)).into() }
+                    TypedValue::Int(inner) => { (&Const(inner)).into()}
+                    TypedValue::Bool(inner) => { (&Const(inner)).into() }
+                }
+            }
+        }
+    }
+}
+
+impl From<PositiveDatalogTerm> for TermData {
+    fn from(value: PositiveDatalogTerm) -> Self {
+        match value.to_datalog_syntax_term() {
+            datalog_syntax::Term::Variable(name) => {
+                None
+            }
+            datalog_syntax::Term::Constant(typed_value) => {
+                match typed_value {
+                    TypedValue::Str(inner) => { Some(Box::new(inner)) }
+                    TypedValue::Int(inner) => { Some(Box::new(inner)) }
+                    TypedValue::Bool(inner) => { Some(Box::new(inner)) }
+                }
+            }
         }
     }
 }
 
 impl<'a> From<datalog_syntax::Rule> for Rule {
     fn from(value: datalog_syntax::Rule) -> Self {
-        let head = Atom::from((value.head.symbol.as_str(), value
+        let rs = RandomState::new();
+
+        let head_symbol = value.head.symbol.as_str();
+        let mut head_term_ir: AtomIR = Default::default();
+        let mut head_term_data: AtomData = Default::default();
+
+        value
             .head
             .terms
             .into_iter()
-            .map(|term| Term::from(term))
-            .collect()));
+            .map(|term| (TermIR::from(PositiveDatalogTerm(term.clone())), TermData::from(PositiveDatalogTerm(term))))
+            .enumerate()
+            .for_each(|(idx, (term_ir, term_data))| {
+                head_term_ir[idx] = term_ir;
+                head_term_data[idx] = term_data;
+            });
+
+        let head = Atom {
+            atom_ir: head_term_ir,
+            atom_data: head_term_data,
+            symbol: rs.hash_one(head_symbol),
+        };
 
         let body = value
             .body
             .into_iter()
             .map(|atom| {
-                Atom::from((atom.symbol.as_str(), atom
+                let current_atom_symbol = value.head.symbol.as_str();
+                let mut current_atom_term_ir: AtomIR = Default::default();
+                let mut current_atom_term_data: AtomData = Default::default();
+
+                atom
                     .terms
                     .into_iter()
-                    .map(|term| Term::from(term))
-                    .collect()))
+                    .map(|term| (TermIR::from(PositiveDatalogTerm(term.clone())), TermData::from(PositiveDatalogTerm(term))))
+                    .enumerate()
+                    .for_each(|(idx, (term_ir, term_data))| {
+                        current_atom_term_ir[idx] = term_ir;
+                        current_atom_term_data[idx] = term_data;
+                    });
+
+                Atom {
+                    atom_ir: current_atom_term_ir,
+                    atom_data: current_atom_term_data,
+                    symbol: rs.hash_one(current_atom_symbol),
+                }
             })
             .collect();
 

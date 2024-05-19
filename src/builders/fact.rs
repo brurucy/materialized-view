@@ -3,10 +3,10 @@ use std::hash::Hash;
 use ahash::RandomState;
 
 type FactData = [Option<Box<dyn Any>>; 3];
-type FactIR = [u64; 3];
+pub type FactIR = [u64; 3];
 pub struct Fact { pub(crate) fact_ir: FactIR, pub(crate) fact_data: FactData }
 
-impl<T> From<(T,)> for Fact where T: Hash {
+impl<T: 'static> From<(T,)> for Fact where T: Hash {
     fn from(value: (T,)) -> Self {
         return Self { fact_ir: [RandomState::new().hash_one(&value.0), 0, 0], fact_data: [ Some(Box::new(value.0)), None, None ] }
     }

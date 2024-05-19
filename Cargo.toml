@@ -3,8 +3,6 @@ name = "materialized-view"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 datalog_syntax = { path = "datalog_syntax" }
 datalog_syntax_macros = { path = "datalog_syntax_macros" }
