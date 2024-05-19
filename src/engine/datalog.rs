@@ -190,10 +190,12 @@ impl MaterializedDatalogView {
 #[cfg(test)]
 mod tests {
     use crate::engine::datalog::MaterializedDatalogView;
-    use datalog_syntax_macros::program;
+    use datalog_syntax_macros::{program, rule};
     use datalog_syntax::*;
     use std::collections::HashSet;
     use crate::builders::goal::ANY_VALUE;
+    use crate::builders::rule;
+    use crate::builders::rule::{Const, Var};
 
     type NodeIndex = usize;
     type Edge = (NodeIndex, NodeIndex);
@@ -407,6 +409,129 @@ mod tests {
         assert_eq!(
             expected_all_from_a_after_update,
             actual_all_from_a_after_update
+        );
+    }
+
+    #[test]
+    fn integration_test_push_rule() {
+        let tc_program = program! {
+            tc(?x, ?y) <- [e(?x, ?y)],
+            tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
+        };
+
+        let mut materialized_datalog_view = MaterializedDatalogView::new(tc_program);
+        vec![
+            (1, 2),
+            (2, 3),
+            (3, 4),
+        ]
+            .into_iter()
+            .for_each(|edge: Edge| {
+                materialized_datalog_view.push_fact("e", edge);
+            });
+
+        assert_eq!(materialized_datalog_view.len(), 3);
+        materialized_datalog_view.poll();
+        assert_eq!(materialized_datalog_view.len(), 9);
+
+        let actual_all: HashSet<Edge> =
+            materialized_datalog_view
+                .query_binary("tc", (ANY_VALUE, ANY_VALUE))
+                .unwrap()
+                .map(|(x, y)| (*x, *y))
+                .collect();
+        let expected_all: HashSet<Edge> = vec![
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            // Second iter
+            (1, 3),
+            (2, 4),
+            // Third iter
+            (1, 4),
+        ]
+            .into_iter()
+            .collect();
+        assert_eq!(expected_all, actual_all);
+
+        // tc1(1, ?x) <- tc(1, ?x)
+        let actual_all_from_a_rule_dyn = rule::Rule::from((
+            ("tc1", (Const(1usize), Var("x"))),
+            vec![("tc", (Const(1usize), Var("x")))]));
+        let actual_all_from_a_rule_compiled = rule::Rule::from(rule!{ tc1(1usize, ?x) <- [tc(1usize, ?x)] });
+        assert_eq!(actual_all_from_a_rule_dyn, actual_all_from_a_rule_compiled);
+        materialized_datalog_view.push_rule(actual_all_from_a_rule_dyn);
+        materialized_datalog_view.poll();
+
+        let actual_all_from_1: HashSet<Edge> =
+            materialized_datalog_view.query_binary("tc1", (ANY_VALUE, ANY_VALUE)).unwrap().map(|(x, y)| (*x, *y)).collect();
+        let expected_all_from_1: HashSet<Edge> = vec![
+            (1, 2),
+            (1, 3),
+            (1, 4),
+        ]
+            .into_iter()
+            .collect();
+        assert_eq!(expected_all_from_1, actual_all_from_1);
+
+        expected_all.iter().for_each(|fact| {
+            assert!(materialized_datalog_view.contains("tc", *fact).unwrap());
+        });
+
+        expected_all_from_1.iter().for_each(|fact| {
+            assert!(materialized_datalog_view.contains("tc", *fact).unwrap());
+        });
+        expected_all_from_1.iter().for_each(|fact| {
+            assert!(materialized_datalog_view.contains("tc1", *fact).unwrap());
+        });
+
+        // Update
+        materialized_datalog_view.push_fact("e", (4usize, 5usize));
+        assert!(!materialized_datalog_view.safe());
+        materialized_datalog_view.poll();
+        assert!(materialized_datalog_view.safe());
+
+        let actual_all_after_update: HashSet<Edge> =
+            materialized_datalog_view
+                .query_binary("tc", (ANY_VALUE, ANY_VALUE))
+                .unwrap()
+                .map(|(x, y)| (*x, *y))
+                .collect();
+        let expected_all_after_update: HashSet<Edge> = vec![
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            // Second iter
+            (1, 3),
+            (2, 4),
+            // Third iter
+            (1, 4),
+            // Update
+            (4, 5),
+            (3, 5),
+            (2, 5),
+            (1, 5),
+        ]
+            .into_iter()
+            .collect();
+        assert_eq!(expected_all_after_update, actual_all_after_update);
+
+        let actual_all_from_1_after_update: HashSet<Edge> = materialized_datalog_view
+            .query_binary("tc1", (ANY_VALUE, ANY_VALUE))
+            .unwrap()
+            .map(|(x, y)| (*x, *y))
+            .collect();
+        let expected_all_from_1_after_update: HashSet<Edge> = vec![
+            (1, 2),
+            (1, 3),
+            (1, 4),
+            (1, 5),
+        ]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            expected_all_from_1_after_update,
+            actual_all_from_1_after_update
         );
     }
 }

@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::fmt::{Debug, Formatter};
 use std::hash::{BuildHasher, Hash, Hasher};
 use datalog_syntax::TypedValue;
 use crate::interning::hash::new_random_state;
@@ -24,7 +25,7 @@ impl<T> From<&Term<T>> for TermIR where T: Hash {
         let rs = new_random_state();
 
         match value {
-            Term::Var(name) => (true, rs.hash_one(name.as_str())),
+            Term::Var(name) => (true, rs.hash_one(name)),
             Term::Const(value) => (false, rs.hash_one(value))
         }
     }
@@ -34,6 +35,20 @@ type AtomData = [TermData; 3];
 type AtomIR = [(bool, u64); 3];
 
 pub struct Atom { pub(crate) atom_ir: AtomIR, pub(crate) atom_data: AtomData, pub(crate) symbol: u64 }
+
+impl PartialEq for Atom {
+    fn eq(&self, other: &Self) -> bool {
+        self.atom_ir.eq(&other.atom_ir) && self.symbol == other.symbol
+    }
+}
+
+impl Eq for Atom {}
+
+impl Debug for Atom {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.atom_ir.fmt(f)
+    }
+}
 
 impl<T: 'static> From<(&str, (Term<T>,))> for Atom where T: Hash {
     fn from(value: (&str, (Term<T>,))) -> Self {
@@ -64,18 +79,22 @@ impl<T: 'static, R: 'static, S: 'static> From<(&str, (Term<T>, Term<R>, Term<S>)
 
 pub type RuleIdentifier = u64;
 
+#[derive(PartialEq, Eq, Debug)]
 pub struct Rule { pub(crate) head: Atom, pub(crate) body: Vec<Atom>, pub(crate) id: RuleIdentifier }
 
-impl From<(Atom, Vec<Atom>)> for Rule {
-    fn from(value: (Atom, Vec<Atom>)) -> Self {
-        let mut rs = new_random_state().build_hasher();
-        value.0.atom_ir.hash(&mut rs);
+impl<T, R> From<(T, Vec<R>)> for Rule where T: Into<Atom>, R: Into<Atom> {
+    fn from(value: (T, Vec<R>)) -> Self {
+        let head = value.0.into();
+        let body: Vec<Atom> = value.1.into_iter().map(|body_atom| body_atom.into()).collect();
 
-        for body_atom in &value.1 {
+        let mut rs = new_random_state().build_hasher();
+        head.atom_ir.hash(&mut rs);
+
+        for body_atom in &body {
             body_atom.atom_ir.hash(&mut rs);
         }
 
-        Self { head: value.0, body: value.1, id: rs.finish() }
+        Self { head, body, id: rs.finish() }
     }
 }
 
@@ -121,7 +140,7 @@ impl From<PositiveDatalogTerm> for TermData {
     }
 }
 
-impl<'a> From<datalog_syntax::Rule> for Rule {
+impl From<datalog_syntax::Rule> for Rule {
     fn from(value: datalog_syntax::Rule) -> Self {
         let rs = new_random_state();
 
@@ -163,7 +182,7 @@ impl<'a> From<datalog_syntax::Rule> for Rule {
                         current_atom_term_ir[idx] = term_ir;
                         current_atom_term_data[idx] = term_data;
                     });
-
+                
                 Atom {
                     atom_ir: current_atom_term_ir,
                     atom_data: current_atom_term_data,

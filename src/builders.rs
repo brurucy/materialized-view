@@ -1,3 +1,3 @@
-pub(crate) mod fact;
-pub(crate) mod rule;
-pub(crate) mod goal;
+pub mod fact;
+pub mod rule;
+pub mod goal;

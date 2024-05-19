@@ -24,6 +24,7 @@ pub type InternedRule = (RelationIdentifier, InternedAtom, Vec<InternedAtom>);
 impl InternmentLayer {
     pub fn resolve_interned_constant<T: 'static>(&self, interned_constant: usize) -> Option<&T> {
         if let Some(actual_value) = self.constant_interner.get_index(interned_constant - 1) {
+            println!("Expected type: {}, actual type: {:?}", std::any::type_name_of_val(&1usize), std::any::type_name_of_val(&actual_value.1));//&actual_value.1.type_id());
             return Some(actual_value.1.downcast_ref::<T>().unwrap())
         }
 
