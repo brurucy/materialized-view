@@ -22,9 +22,9 @@ pub type InternedAtom = (RelationIdentifier, InternedTerms);
 pub type InternedRule = (RelationIdentifier, InternedAtom, Vec<InternedAtom>);
 
 impl InternmentLayer {
-    pub fn resolve_hash<T: 'static>(&self, hash: u64) -> Option<&T> {
-        if let Some(hash_value) = self.constant_interner.get(&hash) {
-            return Some(hash_value.downcast_ref::<T>().unwrap())
+    pub fn resolve_interned_constant<T: 'static>(&self, interned_constant: usize) -> Option<&T> {
+        if let Some(actual_value) = self.constant_interner.get_index(interned_constant - 1) {
+            return Some(actual_value.1.downcast_ref::<T>().unwrap())
         }
 
         None
@@ -100,7 +100,7 @@ impl InternmentLayer {
             }
 
             if let Some(resolved_constant) = self.constant_interner.get_index_of(&fact.fact_ir[i]) {
-                resolved_fact[i] = resolved_constant;
+                resolved_fact[i] = resolved_constant + 1;
             } else {
                 return None
             };
@@ -113,7 +113,7 @@ impl InternmentLayer {
         for i in 0..3usize {
             if goal.goal_ir[i] != 0 {
                 if let Some(resolved_constant) = self.constant_interner.get_index_of(&goal.goal_ir[i]) {
-                    resolved_partial_fact[i] = resolved_constant;
+                    resolved_partial_fact[i] = resolved_constant + 1;
                 } else {
                     return None
                 };
@@ -131,7 +131,7 @@ impl InternmentLayer {
                 }
 
                 if let Some(resolved_constant) = self.constant_interner.get_index_of(&atom.atom_ir[i].1) {
-                    resolved_atom[i] = (false, resolved_constant);
+                    resolved_atom[i] = (false, resolved_constant + 1);
                     continue;
                 } else {
                     return None

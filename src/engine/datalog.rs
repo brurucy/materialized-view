@@ -102,7 +102,7 @@ impl MaterializedDatalogView {
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
             .map(|interned_constant_terms| {
-                let resolved_interned_constant_term = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
+                let resolved_interned_constant_term = self.internment_layer.resolve_interned_constant::<T>(interned_constant_terms[0]).unwrap();
 
                 (resolved_interned_constant_term,)
             }))
@@ -125,8 +125,8 @@ impl MaterializedDatalogView {
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
             .map(|interned_constant_terms| {
-                let resolved_interned_constant_term_one = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
-                let resolved_interned_constant_term_two = self.internment_layer.resolve_hash::<R>(interned_constant_terms[1] as u64).unwrap();
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(interned_constant_terms[0]).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(interned_constant_terms[1]).unwrap();
 
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two)
             }))
@@ -149,9 +149,9 @@ impl MaterializedDatalogView {
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
             .map(|interned_constant_terms| {
-                let resolved_interned_constant_term_one = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
-                let resolved_interned_constant_term_two = self.internment_layer.resolve_hash::<R>(interned_constant_terms[1] as u64).unwrap();
-                let resolved_interned_constant_term_three = self.internment_layer.resolve_hash::<S>(interned_constant_terms[2] as u64).unwrap();
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(interned_constant_terms[0]).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(interned_constant_terms[1]).unwrap();
+                let resolved_interned_constant_term_three = self.internment_layer.resolve_interned_constant::<S>(interned_constant_terms[2]).unwrap();
 
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two, resolved_interned_constant_term_three)
             }))
@@ -259,9 +259,9 @@ mod tests {
             assert!(materialized_datalog_view.contains("tc", *fact).unwrap());
         });
 
-        materialized_datalog_view.push_fact("e", (4, 5));
-        assert!(!materialized_datalog_view.safe());
         // Update
+        materialized_datalog_view.push_fact("e", (4usize, 5usize));
+        assert!(!materialized_datalog_view.safe());
         materialized_datalog_view.poll();
         assert!(materialized_datalog_view.safe());
 
@@ -325,7 +325,7 @@ mod tests {
             (4, 5),
         ]
         .into_iter()
-        .for_each(|edge| {
+        .for_each(|edge: Edge| {
             runtime.push_fact("e", edge);
         });
 
@@ -368,7 +368,7 @@ mod tests {
         assert_eq!(expected_all_from_a, actual_all_from_a);
 
         // Update
-        runtime.retract_fact("e", (4, 5));
+        runtime.retract_fact("e", (4usize, 5usize));
         assert!(!runtime.safe());
         runtime.poll();
         assert!(runtime.safe());
