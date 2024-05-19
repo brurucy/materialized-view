@@ -155,9 +155,4 @@ impl InternmentLayer {
 
         None
     }
-    pub fn new() -> Self {
-        let mut inner: Interner = Default::default();
-
-        Self { inner }
-    }
 }

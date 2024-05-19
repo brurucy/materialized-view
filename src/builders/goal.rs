@@ -1,6 +1,6 @@
 use std::hash::Hash;
-use ahash::RandomState;
 use crate::engine::storage::InternedConstantTerms;
+use crate::interning::hash::new_random_state;
 
 pub const ANY_VALUE: Option<()> = None;
 
@@ -10,7 +10,7 @@ pub struct Goal { pub(crate) goal_ir: GoalIR }
 
 impl<T> From<(Option<T>,)> for Goal where T: Hash {
     fn from(value: (Option<T>,)) -> Self {
-        let rs = RandomState::new();
+        let rs = new_random_state();
         let first = if value.0.is_none() { 0 } else { rs.hash_one(&value.0) };
 
         return Self { goal_ir: [first, 0, 0] }
@@ -19,7 +19,7 @@ impl<T> From<(Option<T>,)> for Goal where T: Hash {
 
 impl<T, R> From<(Option<T>, Option<R>)> for Goal where T: Hash, R: Hash {
     fn from(value: (Option<T>, Option<R>)) -> Self {
-        let rs = RandomState::new();
+        let rs = new_random_state();
         let first = if value.0.is_none() { 0 } else { rs.hash_one(&value.0) };
         let second = if value.0.is_none() { 0 } else { rs.hash_one(&value.1) };
 
@@ -29,7 +29,7 @@ impl<T, R> From<(Option<T>, Option<R>)> for Goal where T: Hash, R: Hash {
 
 impl<T, R, S> From<(Option<T>, Option<R>, Option<S>)> for Goal where T: Hash, R: Hash, S: Hash {
     fn from(value: (Option<T>, Option<R>, Option<S>)) -> Self {
-        let rs = RandomState::new();
+        let rs = new_random_state();
         let first = if value.0.is_none() { 0 } else { rs.hash_one(&value.0) };
         let second = if value.1.is_none() { 0 } else { rs.hash_one(&value.1) };
         let third = if value.2.is_none() { 0 } else { rs.hash_one(&value.2) };
@@ -62,13 +62,3 @@ impl<T, R, S> From<(Option<T>, Option<R>, Option<S>)> for Goal where T: Hash, R:
 
         true
     }
-
-#[cfg(test)]
-mod tests {
-    use crate::builders::goal::{ANY_VALUE, Goal};
-
-    #[test]
-    fn test_goal_builder() {
-        let goal = Goal::from((ANY_VALUE,));
-    }
-}

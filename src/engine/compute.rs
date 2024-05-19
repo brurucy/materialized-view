@@ -15,7 +15,7 @@ fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentif
         let index: Vec<_> = body_atom.1
             .iter()
             // A term that is 0, is not present
-            .filter(|(is_var, term)| *term != 0)
+            .filter(|(_is_var, term)| *term != 0)
             .enumerate()
             .flat_map(|(idx, (is_var, inner))| match is_var {
                 true => {

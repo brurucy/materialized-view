@@ -5,6 +5,7 @@ use crate::builders::fact::Fact;
 use crate::builders::goal::{Goal, pattern_match};
 use crate::builders::rule::Rule;
 use crate::engine::compute::ComputeLayer;
+use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::InternmentLayer;
 
 pub struct MaterializedDatalogView {
@@ -34,9 +35,9 @@ impl MaterializedDatalogView {
     pub fn retract_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         if let Some(fact_storage) = self.storage_layer.inner.get_mut(&hashed_relation_symbol) {
-            let interned_fact = self.internment_layer.intern_fact(fact.into());
+            let interned_fact = self.internment_layer.resolve_fact(fact.into()).unwrap();
 
-            self.compute_layer.send_fact(hashed_relation_symbol, &interned_fact);
+            self.compute_layer.retract_fact(hashed_relation_symbol, &interned_fact);
             self.safe = false;
 
             return fact_storage.remove(&interned_fact)
@@ -59,11 +60,13 @@ impl MaterializedDatalogView {
         self.ensure_rule_relations_exist(&rule);
         
         self.compute_layer.send_rule(self.internment_layer.intern_rule(rule));
+        self.safe = false;
     }
     pub fn retract_rule(&mut self, rule: impl Into<Rule>) {
         let rule = rule.into();
 
-        self.compute_layer.retract_rule(&self.internment_layer.intern_rule(rule));
+        self.compute_layer.retract_rule(&self.internment_layer.resolve_rule(rule).unwrap());
+        self.safe = false;
     }
     pub fn contains(
         &self,
@@ -85,32 +88,40 @@ impl MaterializedDatalogView {
         &self,
         relation_symbol: RelationSymbol,
         goal: impl Into<Goal>
-    ) -> impl Iterator<Item=(&T, )> {
+    ) -> Result<impl Iterator<Item=(&T, )>, String> {
+        if !self.safe() {
+            return Err("polling is needed to obtain correct results".to_string());
+        }
+
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
 
-        fact_storage
+        Ok(fact_storage
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
             .map(|interned_constant_terms| {
                 let resolved_interned_constant_term = self.internment_layer.resolve_hash::<T>(interned_constant_terms[0] as u64).unwrap();
 
                 (resolved_interned_constant_term, )
-            })
+            }))
     }
     pub fn query_binary<'a, T: 'static, R: 'static>(
         &self,
         relation_symbol: RelationSymbol,
         goal: impl Into<Goal>
-    ) -> impl Iterator<Item=(&T, &R)> {
+    ) -> Result<impl Iterator<Item=(&T, &R)>, String> {
+        if !self.safe() {
+            return Err("polling is needed to obtain correct results".to_string());
+        }
+
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
 
-        fact_storage
+        Ok(fact_storage
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
             .map(|interned_constant_terms| {
@@ -118,7 +129,7 @@ impl MaterializedDatalogView {
                 let resolved_interned_constant_term_two = self.internment_layer.resolve_hash::<R>(interned_constant_terms[1] as u64).unwrap();
 
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two)
-            })
+            }))
     }
     fn step(&mut self) {
         self.compute_layer.step();
@@ -135,12 +146,10 @@ impl MaterializedDatalogView {
         let storage_layer: StorageLayer = Default::default();
         let compute_layer = ComputeLayer::new();
         let herbrand_universe = InternmentLayer::default();
-        let mut materialized_datalog_view = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, rs: RandomState::new(), safe: true };
+        let mut materialized_datalog_view = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, rs: new_random_state(), safe: true };
 
         program.inner.into_iter().for_each(|rule| {
             let rule: Rule = rule.into();
-
-            materialized_datalog_view.ensure_rule_relations_exist(&rule);
             materialized_datalog_view.push_rule(rule);
         });
 
@@ -166,7 +175,7 @@ mod tests {
     type Edge = (NodeIndex, NodeIndex);
 
     #[test]
-    fn integration_test_insertions_only() {
+    fn integration_test_push_fact() {
         let tc_program = program! {
             tc(?x, ?y) <- [e(?x, ?y)],
             tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
@@ -179,15 +188,18 @@ mod tests {
             (3, 4),
         ]
         .into_iter()
-        .for_each(|edge| {
+        .for_each(|edge: Edge| {
             materialized_datalog_view.push_fact("e", edge);
         });
 
+        assert_eq!(materialized_datalog_view.len(), 3);
         materialized_datalog_view.poll();
+        assert_eq!(materialized_datalog_view.len(), 6);
 
         let actual_all: HashSet<Edge> =
             materialized_datalog_view
                 .query_binary("tc", (ANY_VALUE, ANY_VALUE))
+                .unwrap()
                 .map(|(x, y)| (*x, *y))
                 .collect();
         let expected_all: HashSet<Edge> = vec![
@@ -205,7 +217,7 @@ mod tests {
         assert_eq!(expected_all, actual_all);
 
         let actual_all_from_a: HashSet<Edge> =
-            materialized_datalog_view.query_binary("tc", (Some(1), ANY_VALUE)).map(|(x, y)| (*x, *y)).collect();
+            materialized_datalog_view.query_binary("tc", (Some(1), ANY_VALUE)).unwrap().map(|(x, y)| (*x, *y)).collect();
         let expected_all_from_a: HashSet<Edge> = vec![
             (1, 2),
             (1, 3),
@@ -232,6 +244,7 @@ mod tests {
         let actual_all_after_update: HashSet<Edge> =
             materialized_datalog_view
                 .query_binary("tc", (ANY_VALUE, ANY_VALUE))
+                .unwrap()
                 .map(|(x, y)| (*x, *y))
                 .collect();
         let expected_all_after_update: HashSet<Edge> = vec![
@@ -255,6 +268,7 @@ mod tests {
 
         let actual_all_from_a_after_update: HashSet<Edge> = materialized_datalog_view
             .query_binary("tc", (Some(1), ANY_VALUE))
+            .unwrap()
             .map(|(x, y)| (*x, *y))
             .collect();
         let expected_all_from_a_after_update: HashSet<Edge> = vec![
@@ -271,7 +285,7 @@ mod tests {
         );
     }
     #[test]
-    fn integration_test_deletions() {
+    fn integration_test_retract_fact() {
         let tc_program = program! {
             tc(?x, ?y) <- [e(?x, ?y)],
             tc(?x, ?z) <- [tc(?x, ?y), tc(?y, ?z)],
@@ -294,7 +308,7 @@ mod tests {
         runtime.poll();
 
         let actual_all: HashSet<Edge> =
-            runtime.query_binary("tc", (ANY_VALUE, ANY_VALUE)).map(|(x, y)| (*x, *y)).collect();
+            runtime.query_binary("tc", (ANY_VALUE, ANY_VALUE)).unwrap().map(|(x, y)| (*x, *y)).collect();
         let expected_all: HashSet<Edge> = vec![
             (1, 2),
             (1, 5),
@@ -316,6 +330,7 @@ mod tests {
 
         let actual_all_from_a: HashSet<Edge> = runtime
             .query_binary("tc", (Some(1), ANY_VALUE))
+            .unwrap()
             .map(|(x, y)| (*x, *y))
             .collect();
         let expected_all_from_a: HashSet<Edge> = vec![
@@ -335,7 +350,7 @@ mod tests {
         assert!(runtime.safe());
 
         let actual_all_after_update: HashSet<Edge> =
-            runtime.query_binary("tc", (ANY_VALUE, ANY_VALUE)).map(|(x, y)| (*x, *y)).collect();
+            runtime.query_binary("tc", (ANY_VALUE, ANY_VALUE)).unwrap().map(|(x, y)| (*x, *y)).collect();
         let expected_all_after_update: HashSet<Edge> = vec![
             (1, 2),
             (2, 3),
@@ -354,6 +369,7 @@ mod tests {
 
         let actual_all_from_a_after_update: HashSet<Edge> = runtime
             .query_binary("tc", (Some(1), ANY_VALUE))
+            .unwrap()
             .map(|(x, y)| (*x, *y))
             .collect();
         let expected_all_from_a_after_update: HashSet<Edge> = vec![

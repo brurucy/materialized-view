@@ -1,2 +1,2 @@
 pub(crate) mod herbrand_universe;
-mod translation;
+pub(crate) mod hash;

@@ -139,9 +139,8 @@ pub fn merge_right_rewrite_into_left(left_rewrite: EncodedRewrite, right_rewrite
     rewrite
 }
 
-/*#[cfg(test)]
+#[cfg(test)]
 mod tests {
-    use crate::interning::rule::InternedTerm;
     use crate::rewriting::atom::{decode_fact, encode_atom_terms, encode_fact};
     use crate::rewriting::rewrite::{add_substitution, apply_rewrite, EncodedRewrite, get_from_encoded_rewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
@@ -157,7 +156,7 @@ mod tests {
 
     #[test]
     fn test_apply_rewrite() {
-        let encoded_atom = encode_atom_terms(&vec![InternedTerm::Variable(1), InternedTerm::Variable(2)]);
+        let encoded_atom = encode_atom_terms(&[(true, 1), (true, 2), (false, 0)]);
         let mut rewrite = 0u128;
         add_substitution(&mut rewrite, (1, 50));
         add_substitution(&mut rewrite, (3, 53));
@@ -171,8 +170,8 @@ mod tests {
 
     #[test]
     fn test_unify_encoded_atom_with_encoded_rewrite() {
-        let encoded_atom_0 = encode_atom_terms(&vec![InternedTerm::Constant(2), InternedTerm::Variable(1)]);
-        let encoded_atom_1 = encode_atom_terms(&vec![InternedTerm::Variable(1)]);
+        let encoded_atom_0 = encode_atom_terms(&[(false, 2), (true, 1), (false, 0)]);
+        let encoded_atom_1 = encode_atom_terms(&[(true, 1), (false, 0), (false, 0)]);
         let encoded_fact = encode_fact(&[2, 3, 0]);
 
         let rewrite_0 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_1, encoded_fact);
@@ -181,13 +180,13 @@ mod tests {
         assert!(!rewrite_1.is_none());
         let application_0 = apply_rewrite(&rewrite_1.unwrap(), &encoded_atom_1);
 
-        assert_eq!(application_0, encode_atom_terms(&vec![InternedTerm::Constant(3)]))
+        assert_eq!(application_0, encode_atom_terms(&[(false, 3), (false, 0), (false, 0)]))
     }
 
     #[test]
     fn test_merge_right_rewrite_into_left() {
-        let encoded_atom_0 = encode_atom_terms(&vec![InternedTerm::Constant(3), InternedTerm::Variable(4), InternedTerm::Variable(5)]);
-        let encoded_atom_1 = encode_atom_terms(&vec![InternedTerm::Variable(6)]);
+        let encoded_atom_0 = encode_atom_terms(&[(false, 3), (true, 4), (true, 5)]);
+        let encoded_atom_1 = encode_atom_terms(&[(true, 6), (false, 0), (false, 0)]);
 
         let encoded_fact_0 = encode_fact(&[3, 5, 7]);
         let encoded_fact_1 = encode_fact(&[8, 0, 0]);
@@ -195,11 +194,10 @@ mod tests {
         let rewrite_0 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_0, encoded_fact_0);
         let rewrite_1 = unify_encoded_atom_with_encoded_rewrite(encoded_atom_1, encoded_fact_1);
 
-        let encoded_atom_2 = encode_atom_terms(&vec![InternedTerm::Variable(4), InternedTerm::Variable(5), InternedTerm::Variable(6)]);
+        let encoded_atom_2 = encode_atom_terms(&[(true, 4), (true, 5), (true, 6)]);
         let expected_encoded_fact = [5, 7, 8];
 
         let rewrite_2 = merge_right_rewrite_into_left(rewrite_0.unwrap(), rewrite_1.unwrap());
         assert_eq!(encode_fact(&expected_encoded_fact), apply_rewrite(&rewrite_2, &encoded_atom_2))
     }
 }
-*/

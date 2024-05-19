@@ -13,7 +13,6 @@ pub fn encode_fact(fact: &InternedConstantTerms) -> EncodedAtom {
         &[_a, 0, _c] => 1,
         &[_a, _b, 0] => 2,
         &[_a, _b, _c] => 3,
-        _ => unreachable!()
     };
     let mut encoded_fact = len;
 
@@ -33,7 +32,6 @@ pub fn encode_atom_terms(atom: &InternedTerms) -> EncodedAtom {
         [(_, _a), (_, 0), (_,_c)] => 1,
         [(_, _a), (_, _b), (_, 0)] => 2,
         [(_, _a), (_, _b), (_, _c)] => 3,
-        _ => unreachable!()
     };
     encoded_atom |= len;
 
@@ -129,7 +127,7 @@ mod tests {
         assert_eq!(expected_encoded_fact, encode_fact(&fact));
 
 
-        let fact_as_atom = [(false, fact[0]), (true, fact[1]), (true, fact[2])];
+        let fact_as_atom = [(false, fact[0]), (false, fact[1]), (false, fact[2])];
         assert_eq!(expected_encoded_fact, encode_atom_terms(&fact_as_atom));
     }
 

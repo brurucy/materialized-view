@@ -21,8 +21,7 @@ impl StorageLayer {
         let mut fresh_fact_storage = FactStorage::default();
         fresh_fact_storage.insert(fact);
 
-        self.inner
-            .insert(*relation_identifier, fresh_fact_storage);
+        self.inner.insert(*relation_identifier, fresh_fact_storage);
 
         true
     }
