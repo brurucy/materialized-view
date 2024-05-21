@@ -455,9 +455,7 @@ mod tests {
         assert_eq!(expected_all, actual_all);
 
         // tc1(1, ?x) <- tc(1, ?x)
-        let actual_all_from_a_rule_dyn = rule::Rule::from((
-            ("tc1", (Const(1usize), Var("x"))),
-            vec![("tc", (Const(1usize), Var("x")))]));
+        let actual_all_from_a_rule_dyn = rule::Rule::from((("tc1", (Const(1usize), Var("x"))), vec![("tc", (Const(1usize), Var("x")))]));
         let actual_all_from_a_rule_compiled = rule::Rule::from(rule!{ tc1(1usize, ?x) <- [tc(1usize, ?x)] });
         assert_eq!(actual_all_from_a_rule_dyn, actual_all_from_a_rule_compiled);
         materialized_datalog_view.push_rule(actual_all_from_a_rule_dyn);

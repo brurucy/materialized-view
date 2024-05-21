@@ -31,6 +31,15 @@ impl<T> From<&Term<T>> for TermIR where T: Hash {
     }
 }
 
+impl<T: 'static> From<Term<T>> for TermData where T: Hash {
+    fn from(value: Term<T>) -> Self {
+        match value {
+            Term::Const(value) => Some(Box::new(value)),
+            _ => None
+        }
+    }
+}
+
 type AtomData = [TermData; 3];
 type AtomIR = [(bool, u64); 3];
 
@@ -53,27 +62,36 @@ impl Debug for Atom {
 impl<T: 'static> From<(&str, (Term<T>,))> for Atom where T: Hash {
     fn from(value: (&str, (Term<T>,))) -> Self {
         let first = TermIR::from(&value.1.0);
+        let first_data = TermData::from(value.1.0);
 
-        return Self { atom_ir: [ first, (false, 0), (false, 0)], atom_data: [ Some(Box::new(value.1.0)), None, None ], symbol: new_random_state().hash_one(value.0) }
+        return Self { atom_ir: [ first, (false, 0), (false, 0)], atom_data: [ first_data, None, None ], symbol: new_random_state().hash_one(value.0) }
     }
 }
 
 impl<T: 'static, R: 'static> From<(&str, (Term<T>, Term<R>))> for Atom where T: Hash, R: Hash {
     fn from(value: (&str, (Term<T>, Term<R>))) -> Self {
         let first = TermIR::from(&value.1.0);
-        let second = TermIR::from(&value.1.1);
+        let first_data = TermData::from(value.1.0);
 
-        return Self { atom_ir: [first, second, (false, 0)], atom_data: [ Some(Box::new(value.1.0)), Some(Box::new(value.1.1)), None ], symbol: new_random_state().hash_one(value.0) }
+        let second = TermIR::from(&value.1.1);
+        let second_data = TermData::from(value.1.1);
+
+        return Self { atom_ir: [first, second, (false, 0)], atom_data: [ first_data, second_data, None ], symbol: new_random_state().hash_one(value.0) }
     }
 }
 
 impl<T: 'static, R: 'static, S: 'static> From<(&str, (Term<T>, Term<R>, Term<S>))> for Atom where T: Hash, R: Hash, S: Hash {
     fn from(value: (&str, (Term<T>, Term<R>, Term<S>))) -> Self {
         let first = TermIR::from(&value.1.0);
-        let second = TermIR::from(&value.1.1);
-        let third = TermIR::from(&value.1.2);
+        let first_data = TermData::from(value.1.0);
 
-        return Self { atom_ir: [first, second, third], atom_data: [ Some(Box::new(value.1.0)), Some(Box::new(value.1.1)), Some(Box::new(value.1.2)) ], symbol: new_random_state().hash_one(value.0) }
+        let second = TermIR::from(&value.1.1);
+        let second_data = TermData::from(value.1.1);
+
+        let third = TermIR::from(&value.1.2);
+        let third_data = TermData::from(value.1.2);
+
+        return Self { atom_ir: [first, second, third], atom_data: [ first_data, second_data, third_data ], symbol: new_random_state().hash_one(value.0) }
     }
 }
 
