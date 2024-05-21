@@ -126,20 +126,21 @@ impl InternmentLayer {
     pub fn resolve_atom(&self, atom: Atom) -> Option<InternedAtom> {
         let mut resolved_atom = [(false, 0); 3];
         for i in 0..3usize {
-            if !atom.atom_ir[i].0 {
-                if !atom.atom_ir[i].1 == 0 {
-                    break;
-                }
-
-                if let Some(resolved_constant) = self.constant_interner.get_index_of(&atom.atom_ir[i].1) {
-                    resolved_atom[i] = (false, resolved_constant + 1);
-                    continue;
+            if atom.atom_ir[i].1 != 0 {
+                if !atom.atom_ir[i].0 {
+                    if let Some(resolved_constant) = self.constant_interner.get_index_of(&atom.atom_ir[i].1) {
+                        resolved_atom[i] = (false, resolved_constant + 1);
+                    } else {
+                        return None
+                    }
                 } else {
-                    return None
+                    if let Some(resolved_variable) = self.variable_interner.get_index_of(&atom.atom_ir[i].1) {
+                        resolved_atom[i] = (true, resolved_variable + 1);
+                    } else {
+                        return None
+                    }
                 }
             }
-
-            resolved_atom[i] = (atom.atom_ir[i].0, atom.atom_ir[i].1 as usize)
         }
 
         Some((atom.symbol, resolved_atom))
