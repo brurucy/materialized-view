@@ -19,7 +19,8 @@ pub struct InternmentLayer {
 pub type InternedTerm = usize;
 pub type InternedTerms = [(bool, InternedTerm); 3];
 pub type InternedAtom = (RelationIdentifier, InternedTerms);
-pub type InternedRule = (RelationIdentifier, InternedAtom, Vec<InternedAtom>);
+pub type RuleIdentifier = u64;
+pub type InternedRule = (RuleIdentifier, InternedAtom, Vec<InternedAtom>);
 
 impl InternmentLayer {
     pub fn resolve_interned_constant<T: 'static>(&self, interned_constant: usize) -> Option<&T> {

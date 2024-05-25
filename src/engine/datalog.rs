@@ -21,27 +21,19 @@ pub type RelationSymbol<'a> = &'a str;
 impl MaterializedDatalogView {
     pub fn push_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
-        if let Some(fact_storage) = self.storage_layer.inner.get_mut(&hashed_relation_symbol) {
-            let interned_fact = self.internment_layer.intern_fact(fact.into());
+        let interned_fact = self.internment_layer.intern_fact(fact.into());
 
-            self.compute_layer.send_fact(hashed_relation_symbol, &interned_fact);
-            self.safe = false;
-
-            return fact_storage.insert(interned_fact)
-        }
+        self.compute_layer.send_fact(hashed_relation_symbol, &interned_fact);
+        self.safe = false;
 
         false
     }
     pub fn retract_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
-        if let Some(fact_storage) = self.storage_layer.inner.get_mut(&hashed_relation_symbol) {
-            let interned_fact = self.internment_layer.resolve_fact(fact.into()).unwrap();
+        let interned_fact = self.internment_layer.resolve_fact(fact.into()).unwrap();
 
-            self.compute_layer.retract_fact(hashed_relation_symbol, &interned_fact);
-            self.safe = false;
-
-            return fact_storage.remove(&interned_fact)
-        }
+        self.compute_layer.retract_fact(hashed_relation_symbol, &interned_fact);
+        self.safe = false;
 
         false
     }
@@ -175,6 +167,7 @@ impl MaterializedDatalogView {
 
         program.inner.into_iter().for_each(|rule| {
             materialized_datalog_view.push_rule(rule);
+            //materialized_datalog_view.poll();
         });
 
         materialized_datalog_view
@@ -218,7 +211,6 @@ mod tests {
             materialized_datalog_view.push_fact("e", edge);
         });
 
-        assert_eq!(materialized_datalog_view.len(), 3);
         materialized_datalog_view.poll();
         assert_eq!(materialized_datalog_view.len(), 9);
 
@@ -481,8 +473,9 @@ mod tests {
             tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
         };
 
-        let mut materialized_datalog_view = MaterializedDatalogView::new(tc_program);
+        let mut materialized_datalog_view = MaterializedDatalogView::new(program! {   });
         vec![
+            // E, TC-1
             (1, 2),
             (2, 3),
             (3, 4),
@@ -491,10 +484,16 @@ mod tests {
             .for_each(|edge: Edge| {
                 materialized_datalog_view.push_fact("e", edge);
             });
-
-        assert_eq!(materialized_datalog_view.len(), 3);
         materialized_datalog_view.poll();
+        assert_eq!(materialized_datalog_view.len(), 3);
+        materialized_datalog_view.push_rule(tc_program.inner[0].clone());
+        materialized_datalog_view.poll();
+        assert_eq!(materialized_datalog_view.len(), 6);
+        materialized_datalog_view.push_rule(tc_program.inner[1].clone());
+        materialized_datalog_view.poll();
+
         assert_eq!(materialized_datalog_view.len(), 9);
+
         materialized_datalog_view.push_rule(rule!{ tc1(1usize, ?x) <- [tc(1usize, ?x)] });
         materialized_datalog_view.poll();
         assert_eq!(materialized_datalog_view.len(), 12);
@@ -515,6 +514,19 @@ mod tests {
         materialized_datalog_view.poll();
         assert!(materialized_datalog_view.safe);
         assert_eq!(materialized_datalog_view.len(), 9);
+        println!("Before");
+        materialized_datalog_view.query_binary::<NodeIndex, NodeIndex>("tc", (ANY_VALUE, ANY_VALUE)).unwrap()
+            .for_each(|(&a, &b)| {
+                println!("({}, {})", a, b)
+            });
+        materialized_datalog_view.retract_rule(rule!{ tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)] });
+        materialized_datalog_view.poll();
+        println!("After");
+        materialized_datalog_view.query_binary::<NodeIndex, NodeIndex>("tc", (ANY_VALUE, ANY_VALUE)).unwrap()
+            .for_each(|(&a, &b)| {
+                println!("({}, {})", a, b)
+            });
+        assert_eq!(materialized_datalog_view.len(), 6);
         materialized_datalog_view.retract_rule(rule!{ tc(?x, ?y) <- [e(?x, ?y)] });
         materialized_datalog_view.poll();
         assert_eq!(materialized_datalog_view.len(), 3);

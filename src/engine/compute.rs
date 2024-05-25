@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
+use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream, ZSet};
 use dbsp::operator::FilterMap;
 use crate::builders::rule::RuleIdentifier;
 use crate::engine::storage::{InternedConstantTerms, RelationIdentifier, StorageLayer};
@@ -79,15 +79,17 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                     Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
                 });
 
-            let (indexed_inferences, _) = circuit
+            let (_, edb_union_idb, _) = circuit
                 .recursive(
                     |child,
-                     (idb_index, rewrites): (
+                     (idb_index, _edb_union_idb, rewrites): (
                          Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
+                         Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
                          Stream<_, OrdIndexedZSet<(RuleIdentifier, BodyAtomPosition), EncodedRewrite, Weight>>,
                      )| {
                         let iteration = iteration.delta0(child);
                         let edb_index = fact_index.delta0(child);
+                        let edb = fact_source.delta0(child);
                         let empty_rewrites = empty_rewrites.delta0(child);
                         let end_for_grounding = end_for_grounding.delta0(child);
                         let unique_column_sets = unique_column_sets.delta0(child);
@@ -129,15 +131,15 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                             });
 
                         let idb_index_out = edb_index.plus(&fresh_indexed_facts);
+                        let edb_union_idb_out = edb.plus(&fresh_facts);
                         let rewrites_out = empty_rewrites.plus(&rewrite_product);
 
-                        Ok((idb_index_out, rewrites_out))
+                        Ok((idb_index_out, edb_union_idb_out.map(|(key, value)| (*key, *value)), rewrites_out))
                     },
                 )
                 .unwrap();
 
-            let inferences_out = indexed_inferences
-                .map(|((symbol, _fact_projection), fresh_fact)| (*symbol, *fresh_fact))
+            let inferences_out = edb_union_idb
                 .output();
 
             Ok(((inferences_out, fact_sink), rule_sink))
