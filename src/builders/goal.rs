@@ -1,7 +1,8 @@
 use std::hash::Hash;
-use crate::engine::storage::InternedConstantTerms;
 use crate::interning::hash::new_random_state;
+use crate::rewriting::atom::{EncodedFact, EncodedGoal};
 
+#[allow(dead_code)]
 pub const ANY_VALUE: Option<()> = None;
 
 type GoalIR = [u64; 3];
@@ -38,27 +39,6 @@ impl<T, R, S> From<(Option<T>, Option<R>, Option<S>)> for Goal where T: Hash, R:
     }
 }
 
-    pub(crate) fn pattern_match(resolved_goal: &InternedConstantTerms, target: &InternedConstantTerms) -> bool {
-        let first_value = resolved_goal.get(0).unwrap();
-        if *first_value != 0 {
-            if first_value != &target[0] {
-                return false
-            }
-        }
-
-        let second_value = resolved_goal.get(1).unwrap();
-        if *second_value != 0 {
-            if second_value != &target[1] {
-                return false
-            }
-        }
-
-        let third_value = resolved_goal.get(2).unwrap();
-        if *third_value != 0 {
-            if third_value != &target[2] {
-                return false
-            }
-        }
-
-        true
-    }
+pub(crate) fn pattern_match(goal: &EncodedGoal, fact: &EncodedFact) -> bool {
+    (goal & fact) == *goal
+}

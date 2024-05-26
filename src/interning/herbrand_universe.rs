@@ -3,7 +3,8 @@ use indexmap::{IndexMap, IndexSet};
 use crate::builders::fact::Fact;
 use crate::builders::goal::Goal;
 use crate::builders::rule::{Atom, Rule};
-use crate::engine::storage::{InternedConstantTerms, RelationIdentifier};
+use crate::engine::storage::{RelationIdentifier};
+use crate::rewriting::atom::{encode_goal, EncodedGoal};
 
 const MAXIMUM_LEN: usize = 1 << 19;
 
@@ -21,20 +22,28 @@ pub type InternedTerms = [(bool, InternedTerm); 3];
 pub type InternedAtom = (RelationIdentifier, InternedTerms);
 pub type RuleIdentifier = u64;
 pub type InternedRule = (RuleIdentifier, InternedAtom, Vec<InternedAtom>);
+pub type InternedConstantTerms = [usize; 3];
 
 impl InternmentLayer {
     pub fn resolve_interned_constant<T: 'static>(&self, interned_constant: usize) -> Option<&T> {
         if let Some(actual_value) = self.constant_interner.get_index(interned_constant - 1) {
-            //println!("Expected type: {}, actual type: {:?}", std::any::type_name_of_val(&1usize), std::any::type_name_of_val(&actual_value.1));//&actual_value.1.type_id());
             return Some(actual_value.1.downcast_ref::<T>().unwrap())
         }
 
         None
     }
     pub fn push_constant(&mut self, hash: u64, data: Box<dyn Any>) -> usize {
+        if self.constant_interner.len() == MAXIMUM_LEN - 1 {
+            panic!("There can not be more than {} unique constant values", MAXIMUM_LEN - 1)
+        }
+
         self.constant_interner.insert_full(hash, data).0 + 1
     }
     pub fn push_variable(&mut self, hash: u64) -> usize {
+        if self.constant_interner.len() == MAXIMUM_LEN - 1 {
+            panic!("There can not be more than {} unique constant values", MAXIMUM_LEN - 1)
+        }
+
         self.variable_interner.insert_full(hash).0 + 1
     }
     pub fn intern_fact(&mut self, fact: Fact) -> InternedConstantTerms {
@@ -110,7 +119,7 @@ impl InternmentLayer {
 
         Some(resolved_fact)
     }
-    pub fn resolve_goal(&self, goal: Goal) -> Option<InternedConstantTerms> {
+    pub fn resolve_goal(&self, goal: Goal) -> Option<EncodedGoal> {
         let mut resolved_partial_fact = [0; 3];
         for i in 0..3usize {
             if goal.goal_ir[i] != 0 {
@@ -122,7 +131,7 @@ impl InternmentLayer {
             }
         }
 
-        Some(resolved_partial_fact)
+        Some(encode_goal(&resolved_partial_fact))
     }
     pub fn resolve_atom(&self, atom: Atom) -> Option<InternedAtom> {
         let mut resolved_atom = [(false, 0); 3];

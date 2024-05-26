@@ -9,3 +9,4 @@ datalog_syntax_macros = { path = "datalog_syntax_macros" }
 indexmap = { version = "2.1.0" }
 dbsp = "0.2.0"
 ahash = "0.8.11"
+identity-hash="0.1.0"

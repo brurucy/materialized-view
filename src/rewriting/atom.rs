@@ -1,13 +1,16 @@
-use crate::engine::storage::InternedConstantTerms;
-use crate::interning::herbrand_universe::{InternedTerms};
+use crate::interning::herbrand_universe::{InternedConstantTerms, InternedTerms};
 
 pub type EncodedAtom = u64;
+pub type EncodedFact = u64;
+pub type ProjectedEncodedFact = u64;
+pub type ProjectedEncodedAtom = u64;
+pub type EncodedGoal = u64;
 pub const TERM_COUNT_BITS: u64 = 2;
 pub const TERM_COUNT_MASK: u64 = TERM_COUNT_BITS + 1;
 pub const TERM_VALUE_BITS: u64 = 20;
 pub const TERM_VALUE_MASK: u64 = (1 << (TERM_VALUE_BITS - 1)) - 1;
 pub const TERM_KIND_AND_VALUE_MASK: u64 = (1 << TERM_VALUE_BITS) - 1;
-pub fn encode_fact(fact: &InternedConstantTerms) -> EncodedAtom {
+pub fn encode_fact(fact: &InternedConstantTerms) -> EncodedFact {
     let len = match fact {
         &[0, _b, _c] => 0,
         &[_a, 0, _c] => 1,
@@ -48,8 +51,22 @@ pub fn encode_atom_terms(atom: &InternedTerms) -> EncodedAtom {
 
     encoded_atom
 }
-pub fn project_encoded_fact(atom: &EncodedAtom, column_set: &Vec<usize>) -> EncodedAtom {
-    let len = TERM_COUNT_MASK & atom;
+
+pub fn encode_goal(goal: &InternedConstantTerms) -> EncodedGoal {
+    let mut encoded_goal = 0;
+
+    for (idx, term_value) in goal.iter().enumerate() {
+        let term_bits = ((*term_value as u64) & TERM_VALUE_MASK) << 1;
+        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * (idx as u64));
+
+        encoded_goal |= term_bits << shift_amount;
+    }
+
+    encoded_goal
+}
+
+pub fn project_encoded_fact(fact: &EncodedFact, column_set: &Vec<usize>) -> ProjectedEncodedFact {
+    let len = TERM_COUNT_MASK & fact;
     let mut projection_mask = 0;
     for idx in 0..(len as usize) {
         if !column_set.contains(&idx) {
@@ -60,13 +77,13 @@ pub fn project_encoded_fact(atom: &EncodedAtom, column_set: &Vec<usize>) -> Enco
 
             let term_mask = range_start ^ range_end;
 
-            projection_mask |= atom & term_mask;
+            projection_mask |= fact & term_mask;
         }
     }
 
-    atom ^ projection_mask
+    fact ^ projection_mask
 }
-pub fn project_encoded_atom(atom: &EncodedAtom) -> EncodedAtom {
+pub fn project_encoded_atom(atom: &EncodedAtom) -> ProjectedEncodedAtom {
     let len = TERM_COUNT_MASK & atom;
     let mut projection_mask = 0;
     for idx in 0..(len as usize) {
@@ -125,7 +142,6 @@ mod tests {
         let expected_encoded_fact = expected_encoded_length | expected_encoded_first_term | expected_encoded_second_term | expected_encoded_third_term;
 
         assert_eq!(expected_encoded_fact, encode_fact(&fact));
-
 
         let fact_as_atom = [(false, fact[0]), (false, fact[1]), (false, fact[2])];
         assert_eq!(expected_encoded_fact, encode_atom_terms(&fact_as_atom));

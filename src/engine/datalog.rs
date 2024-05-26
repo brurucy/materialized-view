@@ -1,5 +1,4 @@
 use ahash::RandomState;
-use datalog_syntax::Program;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::builders::fact::Fact;
 use crate::builders::goal::{Goal, pattern_match};
@@ -7,6 +6,7 @@ use crate::builders::rule::Rule;
 use crate::engine::compute::ComputeLayer;
 use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::InternmentLayer;
+use crate::rewriting::atom::{decode_fact, encode_fact};
 
 pub struct MaterializedDatalogView {
     compute_layer: ComputeLayer,
@@ -16,6 +16,8 @@ pub struct MaterializedDatalogView {
     safe: bool,
 }
 
+pub const EMPTY_PROGRAM: Vec<Rule> = vec![];
+
 pub type RelationSymbol<'a> = &'a str;
 
 impl MaterializedDatalogView {
@@ -23,17 +25,22 @@ impl MaterializedDatalogView {
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         let interned_fact = self.internment_layer.intern_fact(fact.into());
 
-        self.compute_layer.send_fact(hashed_relation_symbol, &interned_fact);
+        let encoded_fact = encode_fact(&interned_fact);
+        self.compute_layer.send_fact(hashed_relation_symbol, encoded_fact);
         self.safe = false;
 
-        false
+        self.storage_layer.contains(&hashed_relation_symbol, &encoded_fact)
     }
     pub fn retract_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
-        let interned_fact = self.internment_layer.resolve_fact(fact.into()).unwrap();
+        if let Some(resolved_fact) = self.internment_layer.resolve_fact(fact.into()) {
+            let encoded_resolved_fact = encode_fact(&resolved_fact);
 
-        self.compute_layer.retract_fact(hashed_relation_symbol, &interned_fact);
-        self.safe = false;
+            self.compute_layer.retract_fact(hashed_relation_symbol, encoded_resolved_fact);
+            self.safe = false;
+
+            return self.storage_layer.contains(&hashed_relation_symbol, &encoded_resolved_fact)
+        };
 
         false
     }
@@ -50,14 +57,16 @@ impl MaterializedDatalogView {
     pub fn push_rule(&mut self, rule: impl Into<Rule>) {
         let rule = rule.into();
         self.ensure_rule_relations_exist(&rule);
-        
         self.compute_layer.send_rule(self.internment_layer.intern_rule(rule));
+
         self.safe = false;
     }
     pub fn retract_rule(&mut self, rule: impl Into<Rule>) {
         let rule = rule.into();
+        if let Some(resolved_rule) = &self.internment_layer.resolve_rule(rule) {
+            self.compute_layer.retract_rule(resolved_rule);
+        }
 
-        self.compute_layer.retract_rule(&self.internment_layer.resolve_rule(rule).unwrap());
         self.safe = false;
     }
     pub fn contains(
@@ -71,7 +80,7 @@ impl MaterializedDatalogView {
 
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         if let Some(interned_fact) = self.internment_layer.resolve_fact(fact.into()) {
-            return Ok(self.storage_layer.contains(&hashed_relation_symbol, &interned_fact))
+            return Ok(self.storage_layer.contains(&hashed_relation_symbol, &encode_fact(&interned_fact)))
         }
 
         Ok(false)
@@ -93,8 +102,8 @@ impl MaterializedDatalogView {
         Ok(fact_storage
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
-            .map(|interned_constant_terms| {
-                let resolved_interned_constant_term = self.internment_layer.resolve_interned_constant::<T>(interned_constant_terms[0]).unwrap();
+            .map(|encoded_fact| {
+                let resolved_interned_constant_term = self.internment_layer.resolve_interned_constant::<T>(decode_fact(*encoded_fact)[0]).unwrap();
 
                 (resolved_interned_constant_term,)
             }))
@@ -116,9 +125,9 @@ impl MaterializedDatalogView {
         Ok(fact_storage
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
-            .map(|interned_constant_terms| {
-                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(interned_constant_terms[0]).unwrap();
-                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(interned_constant_terms[1]).unwrap();
+            .map(|encoded_fact| {
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(decode_fact(*encoded_fact)[0]).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(decode_fact(*encoded_fact)[1]).unwrap();
 
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two)
             }))
@@ -140,10 +149,10 @@ impl MaterializedDatalogView {
         Ok(fact_storage
             .iter()
             .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms))
-            .map(|interned_constant_terms| {
-                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(interned_constant_terms[0]).unwrap();
-                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(interned_constant_terms[1]).unwrap();
-                let resolved_interned_constant_term_three = self.internment_layer.resolve_interned_constant::<S>(interned_constant_terms[2]).unwrap();
+            .map(|encoded_fact| {
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(decode_fact(*encoded_fact)[0]).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(decode_fact(*encoded_fact)[1]).unwrap();
+                let resolved_interned_constant_term_three = self.internment_layer.resolve_interned_constant::<S>(decode_fact(*encoded_fact)[2]).unwrap();
 
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two, resolved_interned_constant_term_three)
             }))
@@ -159,15 +168,14 @@ impl MaterializedDatalogView {
         self.consolidate();
         self.safe = true;
     }
-    pub fn new(program: Program) -> Self {
+    pub fn new(program: Vec<impl Into<Rule>>) -> Self {
         let storage_layer: StorageLayer = Default::default();
         let compute_layer = ComputeLayer::new();
         let herbrand_universe = InternmentLayer::default();
         let mut materialized_datalog_view = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, rs: new_random_state(), safe: true };
 
-        program.inner.into_iter().for_each(|rule| {
+        program.into_iter().for_each(|rule| {
             materialized_datalog_view.push_rule(rule);
-            //materialized_datalog_view.poll();
         });
 
         materialized_datalog_view
@@ -182,7 +190,7 @@ impl MaterializedDatalogView {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::datalog::MaterializedDatalogView;
+    use crate::engine::datalog::{EMPTY_PROGRAM, MaterializedDatalogView};
     use datalog_syntax_macros::{program, rule};
     use datalog_syntax::*;
     use std::collections::HashSet;
@@ -473,9 +481,8 @@ mod tests {
             tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
         };
 
-        let mut materialized_datalog_view = MaterializedDatalogView::new(program! {   });
+        let mut materialized_datalog_view = MaterializedDatalogView::new(EMPTY_PROGRAM);
         vec![
-            // E, TC-1
             (1, 2),
             (2, 3),
             (3, 4),
@@ -486,10 +493,10 @@ mod tests {
             });
         materialized_datalog_view.poll();
         assert_eq!(materialized_datalog_view.len(), 3);
-        materialized_datalog_view.push_rule(tc_program.inner[0].clone());
+        materialized_datalog_view.push_rule(tc_program[0].clone());
         materialized_datalog_view.poll();
         assert_eq!(materialized_datalog_view.len(), 6);
-        materialized_datalog_view.push_rule(tc_program.inner[1].clone());
+        materialized_datalog_view.push_rule(tc_program[1].clone());
         materialized_datalog_view.poll();
 
         assert_eq!(materialized_datalog_view.len(), 9);

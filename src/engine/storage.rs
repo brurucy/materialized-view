@@ -1,9 +1,8 @@
 use indexmap::{IndexMap, IndexSet};
-use crate::interning::herbrand_universe::InternedTerm;
+use crate::rewriting::atom::{EncodedFact};
 
 pub type RelationIdentifier = u64;
-pub type InternedConstantTerms = [InternedTerm; 3];
-pub type FactStorage = IndexSet<InternedConstantTerms>;
+pub type FactStorage = IndexSet<EncodedFact, identity_hash::BuildIdentityHasher<EncodedFact>>;
 #[derive(Default)]
 pub struct StorageLayer {
     pub(crate) inner: IndexMap<RelationIdentifier, FactStorage>,
@@ -13,7 +12,7 @@ impl StorageLayer {
     pub fn get_relation(&self, relation_identifier: &RelationIdentifier) -> &FactStorage {
         return self.inner.get(relation_identifier).unwrap()
     }
-    pub fn push(&mut self, relation_identifier: &RelationIdentifier, fact: InternedConstantTerms) -> bool {
+    pub fn push(&mut self, relation_identifier: &RelationIdentifier, fact: EncodedFact) -> bool {
         if let Some(relation) = self.inner.get_mut(relation_identifier) {
             return relation.insert(fact);
         }
@@ -25,14 +24,14 @@ impl StorageLayer {
 
         true
     }
-    pub fn remove(&mut self, relation_identifier: &RelationIdentifier, fact: &InternedConstantTerms) -> bool {
+    pub fn remove(&mut self, relation_identifier: &RelationIdentifier, fact: &EncodedFact) -> bool {
         if let Some(relation) = self.inner.get_mut(relation_identifier) {
             return relation.remove(fact);
         }
 
         false
     }
-    pub fn contains(&self, relation_identifier: &RelationIdentifier, fact: &InternedConstantTerms) -> bool {
+    pub fn contains(&self, relation_identifier: &RelationIdentifier, fact: &EncodedFact) -> bool {
         if let Some(relation) = self.inner.get(relation_identifier) {
             return relation.contains(fact);
         }

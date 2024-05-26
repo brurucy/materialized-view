@@ -156,16 +156,4 @@ impl Debug for Rule {
     }
 }
 
-#[derive(Debug, Ord, PartialOrd, Eq, PartialEq, Clone, Hash)]
-pub struct Program {
-    pub inner: Vec<Rule>,
-}
-
-impl From<Vec<Rule>> for Program {
-    fn from(value: Vec<Rule>) -> Self {
-        let mut val = value;
-        val.sort();
-
-        Self { inner: val }
-    }
-}
+pub type Program = Vec<Rule>;

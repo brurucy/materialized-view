@@ -197,7 +197,7 @@ pub fn program(input: TokenStream) -> TokenStream {
     }).collect();
 
     let expanded = quote! {
-        Program::from( vec![#(#rules),*] )
+        vec![#(#rules),*]
     };
 
     expanded.into()

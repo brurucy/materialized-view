@@ -2,9 +2,9 @@ use std::collections::HashSet;
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream, ZSet};
 use dbsp::operator::FilterMap;
 use crate::builders::rule::RuleIdentifier;
-use crate::engine::storage::{InternedConstantTerms, RelationIdentifier, StorageLayer};
+use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
-use crate::rewriting::atom::{decode_fact, encode_atom_terms, encode_fact, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
+use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
 fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentifier, Vec<usize>)> {
@@ -162,11 +162,11 @@ impl ComputeLayer {
 
         Self { dbsp_runtime, fact_sink, rule_sink, fact_source }
     }
-    pub fn send_fact(&self, hashed_relation_symbol: RelationIdentifier, interned_fact: &InternedConstantTerms) {
-        self.fact_sink.push(hashed_relation_symbol, (encode_fact(&interned_fact), 1))
+    pub fn send_fact(&self, hashed_relation_symbol: RelationIdentifier, encoded_fact: EncodedAtom) {
+        self.fact_sink.push(hashed_relation_symbol, (encoded_fact, 1))
     }
-    pub fn retract_fact(&self, hashed_relation_symbol: RelationIdentifier, interned_fact: &InternedConstantTerms) {
-        self.fact_sink.push(hashed_relation_symbol, (encode_fact(&interned_fact), -1))
+    pub fn retract_fact(&self, hashed_relation_symbol: RelationIdentifier, encoded_fact: EncodedAtom) {
+        self.fact_sink.push(hashed_relation_symbol, (encoded_fact, -1))
     }
     pub fn send_rule(&self, rule: InternedRule) {
         self.rule_sink.push(rule, 1)
@@ -183,13 +183,12 @@ impl ComputeLayer {
             .consolidate()
             .iter()
             .map(|((hashed_relation_symbol, encoded_fact), _, weight)| (hashed_relation_symbol, encoded_fact, weight))
-            .for_each(|(hashed_relation_symbol, fresh_fact, weight)| {
-                let decoded_fact = decode_fact(fresh_fact);
+            .for_each(|(hashed_relation_symbol, encoded_fact, weight)| {
 
                 if weight.signum() > 0 {
-                    storage_layer.push(&hashed_relation_symbol, decoded_fact);
+                    storage_layer.push(&hashed_relation_symbol, encoded_fact);
                 } else {
-                    storage_layer.remove(&hashed_relation_symbol, &decoded_fact);
+                    storage_layer.remove(&hashed_relation_symbol, &encoded_fact);
                 }
             });
     }
