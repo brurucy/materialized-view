@@ -11,11 +11,11 @@ use crate::interning::herbrand_universe::InternmentLayer;
 use crate::rewriting::atom::{decode_fact, encode_fact};
 
 pub struct MaterializedDatalogView {
-    compute_layer: ComputeLayer,
+    pub compute_layer: ComputeLayer,
     internment_layer: InternmentLayer,
     storage_layer: StorageLayer,
     rs: RandomState,
-    safe: bool,
+    pub safe: bool,
 }
 
 pub const EMPTY_PROGRAM: Vec<Rule> = vec![];
@@ -175,10 +175,10 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two, resolved_interned_constant_term_three)
             }))
     }
-    fn step(&mut self) {
+    pub fn step(&mut self) {
         self.compute_layer.step();
     }
-    fn consolidate(&mut self) {
+    pub fn consolidate(&mut self) {
         self.compute_layer.consolidate_into_storage_layer(&mut self.storage_layer)
     }
     pub fn poll(&mut self) {
@@ -559,7 +559,6 @@ mod tests {
             (1, 2),
             (2, 3),
             (3, 1),
-            //
             (4, 5),
             (5, 6)
         ]

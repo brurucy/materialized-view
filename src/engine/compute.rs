@@ -78,7 +78,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 for i in 0..body.len() {
                     let mut rs = new_random_state().build_hasher();
                     last_hash.hash(&mut rs);
-                    &body[i].hash(&mut rs);
+                    body[i].hash(&mut rs);
                     let this_hash = rs.finish(); // please use interner instead for collision resistance
                     body_subsets.push((last_hash as LastHash, (this_hash as NewHash, (body[i].0, encode_atom_terms(&body[i].1)))));
                     last_hash = this_hash;
@@ -93,7 +93,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 for i in 0..body.len() {
                     let mut rs = new_random_state().build_hasher();
                     last_hash.hash(&mut rs);
-                    &body[i].hash(&mut rs);
+                    body[i].hash(&mut rs);
                     let this_hash = rs.finish(); // please use interner instead for collision resistance
                     last_hash = this_hash;
                 }
@@ -171,7 +171,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 .unwrap();
 
             let inferences_out = edb_union_idb
-                .distinct()
+                //.distinct()
                 .output();
 
             Ok(((inferences_out, fact_sink), rule_sink))
@@ -209,7 +209,8 @@ impl ComputeLayer {
     pub fn step(&mut self) {
         self.dbsp_runtime.step().unwrap();
     }
-    pub fn consolidate_into_storage_layer(&self, storage_layer: &mut StorageLayer) {
+    pub fn consolidate_into_storage_layer(&mut self, storage_layer: &mut StorageLayer) {
+        //self.dbsp_runtime.dump_profile("prof");
         self
             .fact_source
             .consolidate()
