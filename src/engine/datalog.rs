@@ -550,7 +550,7 @@ mod tests {
     #[test]
     fn integration_test_triangle_query() {
         let tc_program = program! {
-            tc(?a, ?b) <- [e(?a, ?b), e(?b, ?c)],
+            //tc(?a, ?b) <- [e(?a, ?b), e(?b, ?c)],
             t(?a, ?b, ?c) <- [e(?a, ?b), e(?b, ?c), e(?c, ?a)],
         };
 

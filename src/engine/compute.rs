@@ -1,8 +1,10 @@
 use std::collections::HashSet;
+use std::hash::{BuildHasher, Hash, Hasher};
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
 use crate::builders::rule::RuleIdentifier;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
+use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
 use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
@@ -44,6 +46,8 @@ pub type Weight = isize;
 pub type FactSink = CollectionHandle<RelationIdentifier, (EncodedAtom, Weight)>;
 pub type RuleSink = CollectionHandle<InternedRule, Weight>;
 pub type FactSource = OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>;
+pub type LastHash = u64;
+pub type NewHash = u64;
 pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
     let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
     // TODO! Set the core count to whatever is available
@@ -63,22 +67,50 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 })
                 .flat_map_index(compute_unique_column_sets)
                 .distinct();
-            let rules_by_id =
-                rule_source.index_with(|(id, head, body)| (*id, ((head.0, encode_atom_terms(&head.1)), body.clone())));
-            let iteration = rules_by_id.flat_map_index(|(rule_id, (_head, body))| {
-                body.iter()
-                    .enumerate()
-                    .map(|(atom_position, atom)| ((*rule_id, atom_position), (atom.0, encode_atom_terms(&atom.1))))
-                    .collect::<Vec<_>>()
+
+            let rules_by_id = rule_source.map(|(id, head, body)| (head.clone(), body.clone()));
+
+            let iteration = rules_by_id
+                .flat_map_index(|(head, body)| {
+                let mut body_subsets = vec![];
+                let mut last_hash =0;
+
+                for i in 0..body.len() {
+                    let mut rs = new_random_state().build_hasher();
+                    last_hash.hash(&mut rs);
+                    &body[i].hash(&mut rs);
+                    let this_hash = rs.finish(); // please use interner instead for collision resistance
+                    body_subsets.push((last_hash as LastHash, (this_hash as NewHash, (body[i].0, encode_atom_terms(&body[i].1)))));
+                    last_hash = this_hash;
+                }
+
+                body_subsets
+            })
+                .distinct();
+
+            let end_for_grounding = rules_by_id.index_with(|(head, body)| {
+                let mut last_hash =0;
+                for i in 0..body.len() {
+                    let mut rs = new_random_state().build_hasher();
+                    last_hash.hash(&mut rs);
+                    &body[i].hash(&mut rs);
+                    let this_hash = rs.finish(); // please use interner instead for collision resistance
+                    last_hash = this_hash;
+                }
+
+                (last_hash as LastHash, (0_u64 as NewHash, (head.0, encode_atom_terms(&head.1))))
             });
-            let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), (head.0, encode_atom_terms(&head.1))));
-            let empty_rewrites = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), EncodedRewrite::default()));
-            // 0 - tc(?x, ?y) <- e(?x, ?y)
-            // 1 - tc(?x, ?z) <- e(?x, ?y), tc(?y, ?z)
+            let empty_rewrites = rule_source
+                .index_with(|(rule_id, _head, _body)| (0u64, EncodedRewrite::default()))
+                .distinct();
+            // 0 - tc(?x, ?y) <- e(?x, ?y) -- e(?x, ?y)
+            // 1 - tc(?x, ?z) <- e(?x, ?y) -- e(?x, ?y), tc(?y, ?z) --
             // ((0, 0), {})
             // ((1, 0), {})
 
-            // t(a, b, c) <- e(a, b), e(b, c), e(c, a)
+            // tc(a, b) // 1 <- e(a, b) // 0
+            // tc(a, b) // 2 <- e(a, b) // 0, e(b, c) // 1
+            // t(a, b, c) // 2 <- e(a, b) // 0, e(b, c) // 1, e(c, a) // 2
 
             let fact_index = fact_source
                 .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
@@ -91,7 +123,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                      (idb_index, _edb_union_idb, rewrites): (
                          Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
                          Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
-                         Stream<_, OrdIndexedZSet<(RuleIdentifier, BodyAtomPosition), EncodedRewrite, Weight>>,
+                         Stream<_, OrdIndexedZSet<LastHash, EncodedRewrite, Weight>>, // TODO: type alias the u64 to bodyprefixhash or w/e name
                      )| {
                         let iteration = iteration.delta0(child);
                         let edb_index = fact_index.delta0(child);
@@ -102,23 +134,23 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
 
                         let previous_propagated_rewrites = rewrites.join_index(
                             &iteration,
-                            |key, rewrite, (current_body_atom_symbol, current_body_atom)| {
+                            |_key, rewrite, (new_hash, (current_body_atom_symbol, current_body_atom))| {
                                 let encoded_atom = apply_rewrite(&rewrite, &current_body_atom);
-                                
-                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*key, encoded_atom, *rewrite), ))
+
+                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, *rewrite), ))
                             },
                         );
 
                         let rewrite_product =
-                            idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, ((rule_id, atom_position), encoded_fresh_atom, rewrite)| {
+                            idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, (new_hash, encoded_fresh_atom, rewrite)| {
                                 let unification = unify_encoded_atom_with_encoded_rewrite(*encoded_fresh_atom, *encoded_fact).unwrap();
                                 let extended_rewrite = merge_right_rewrite_into_left(*rewrite, unification);
 
-                                Some(((*rule_id, *atom_position + 1), extended_rewrite))
+                                Some((*new_hash, extended_rewrite))
                             });
 
                         let fresh_facts = end_for_grounding
-                            .join_index(&rewrite_product, |(_rule_id, _final_atom_position), (head_atom_symbol, head_atom), final_substitution| {
+                            .join_index(&rewrite_product, |_last_hash, (_new_hash, (head_atom_symbol, head_atom)), final_substitution| {
                                 let fresh_encoded_fact = apply_rewrite(&final_substitution, head_atom);
 
                                 Some((*head_atom_symbol, fresh_encoded_fact))
@@ -139,6 +171,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 .unwrap();
 
             let inferences_out = edb_union_idb
+                .distinct()
                 .output();
 
             Ok(((inferences_out, fact_sink), rule_sink))
