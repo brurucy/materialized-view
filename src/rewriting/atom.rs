@@ -6,10 +6,11 @@ pub type ProjectedEncodedFact = u64;
 pub type ProjectedEncodedAtom = u64;
 pub type EncodedGoal = u64;
 pub const TERM_COUNT_BITS: u64 = 2;
-pub const TERM_COUNT_MASK: u64 = TERM_COUNT_BITS + 1;
-pub const TERM_VALUE_BITS: u64 = 20;
-pub const TERM_VALUE_MASK: u64 = (1 << (TERM_VALUE_BITS - 1)) - 1;
-pub const TERM_KIND_AND_VALUE_MASK: u64 = (1 << TERM_VALUE_BITS) - 1;
+pub const TERM_COUNT_MASK: u64 = 3;
+pub const TERM_BITS: u64 = 20;
+pub const TERM_VALUE_BITS: u64 = 19;
+pub const TERM_VALUE_MASK: u64 = (1 << TERM_VALUE_BITS) - 1;
+pub const TERM_BITS_MASK: u64 = (1 << TERM_BITS) - 1;
 pub fn encode_fact(fact: &InternedConstantTerms) -> EncodedFact {
     let len = match fact {
         &[0, _b, _c] => 0,
@@ -21,7 +22,7 @@ pub fn encode_fact(fact: &InternedConstantTerms) -> EncodedFact {
 
     for (idx, term_value) in fact.iter().enumerate() {
         let term_bits = ((*term_value as u64) & TERM_VALUE_MASK) << 1;
-        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * (idx as u64));
+        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * (idx as u64));
 
         encoded_fact |= term_bits << shift_amount;
     }
@@ -44,7 +45,7 @@ pub fn encode_atom_terms(atom: &InternedTerms) -> EncodedAtom {
         if *is_var {
             term_bits |= 1;
         }
-        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * (idx as u64));
+        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * (idx as u64));
 
         encoded_atom |= term_bits << shift_amount;
     }
@@ -57,7 +58,7 @@ pub fn encode_goal(goal: &InternedConstantTerms) -> EncodedGoal {
 
     for (idx, term_value) in goal.iter().enumerate() {
         let term_bits = ((*term_value as u64) & TERM_VALUE_MASK) << 1;
-        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * (idx as u64));
+        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * (idx as u64));
 
         encoded_goal |= term_bits << shift_amount;
     }
@@ -70,10 +71,10 @@ pub fn project_encoded_fact(fact: &EncodedFact, column_set: &Vec<usize>) -> Proj
     let mut projection_mask = 0;
     for idx in 0..(len as usize) {
         if !column_set.contains(&idx) {
-            let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * idx as u64);
+            let shift_amount = TERM_COUNT_BITS + (TERM_BITS * idx as u64);
 
             let range_start = (1 << (shift_amount)) - 1;
-            let range_end = (1 << (shift_amount + TERM_VALUE_BITS)) - 1;
+            let range_end = (1 << (shift_amount + TERM_BITS)) - 1;
 
             let term_mask = range_start ^ range_end;
 
@@ -87,7 +88,7 @@ pub fn project_encoded_atom(atom: &EncodedAtom) -> ProjectedEncodedAtom {
     let len = TERM_COUNT_MASK & atom;
     let mut projection_mask = 0;
     for idx in 0..(len as usize) {
-        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * idx as u64);
+        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * idx as u64);
         let ith_bit = 1 << shift_amount;
 
         if (atom & ith_bit) != ith_bit {
@@ -95,7 +96,7 @@ pub fn project_encoded_atom(atom: &EncodedAtom) -> ProjectedEncodedAtom {
         }
 
         let range_start = ith_bit - 1;
-        let range_end = (1 << (shift_amount + TERM_VALUE_BITS)) - 1;
+        let range_end = (1 << (shift_amount + TERM_BITS)) - 1;
 
         let term_mask = range_start ^ range_end;
 
@@ -108,10 +109,10 @@ pub fn decode_fact(fact: EncodedAtom) -> InternedConstantTerms {
     let len = (TERM_COUNT_MASK & fact) as usize;
     let mut decoded_fact = [0; 3];
     for idx in 0..len {
-        let shift_amount = TERM_COUNT_BITS + (TERM_VALUE_BITS * idx as u64);
+        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * idx as u64);
 
         let range_start = (1 << (shift_amount)) - 1;
-        let range_end = (1 << (shift_amount + TERM_VALUE_BITS)) - 1;
+        let range_end = (1 << (shift_amount + TERM_BITS)) - 1;
 
         let term_mask = range_start ^ range_end;
         let term = fact & term_mask;

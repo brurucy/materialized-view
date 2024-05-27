@@ -1,3 +1,5 @@
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use ahash::RandomState;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::builders::fact::Fact;
@@ -19,6 +21,22 @@ pub struct MaterializedDatalogView {
 pub const EMPTY_PROGRAM: Vec<Rule> = vec![];
 
 pub type RelationSymbol<'a> = &'a str;
+
+pub struct PollingError;
+
+impl Display for PollingError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("polling is needed to obtain correct results")
+    }
+}
+
+impl Debug for PollingError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("polling is needed to obtain correct results")
+    }
+}
+
+impl Error for PollingError {}
 
 impl MaterializedDatalogView {
     pub fn push_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
@@ -73,9 +91,9 @@ impl MaterializedDatalogView {
         &self,
         relation_symbol: RelationSymbol,
         fact: impl Into<Fact>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, PollingError> {
         if !self.safe() {
-            return Err("polling is needed to obtain correct results".to_string());
+            return Err(PollingError)
         }
 
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
@@ -89,9 +107,9 @@ impl MaterializedDatalogView {
         &self,
         relation_symbol: RelationSymbol,
         goal: impl Into<Goal>
-    ) -> Result<impl Iterator<Item=(&T, )>, String> {
+    ) -> Result<impl Iterator<Item=(&T, )>, PollingError> {
         if !self.safe() {
-            return Err("polling is needed to obtain correct results".to_string());
+            return Err(PollingError)
         }
 
         let goal = goal.into();
@@ -112,9 +130,9 @@ impl MaterializedDatalogView {
         &self,
         relation_symbol: RelationSymbol,
         goal: impl Into<Goal>
-    ) -> Result<impl Iterator<Item=(&T, &R)>, String> {
+    ) -> Result<impl Iterator<Item=(&T, &R)>, PollingError> {
         if !self.safe() {
-            return Err("polling is needed to obtain correct results".to_string());
+            return Err(PollingError);
         }
 
         let goal = goal.into();
@@ -136,9 +154,9 @@ impl MaterializedDatalogView {
         &self,
         relation_symbol: RelationSymbol,
         goal: impl Into<Goal>
-    ) -> Result<impl Iterator<Item=(&T, &R, &S)>, String> {
+    ) -> Result<impl Iterator<Item=(&T, &R, &S)>, PollingError> {
         if !self.safe() {
-            return Err("polling is needed to obtain correct results".to_string());
+            return Err(PollingError);
         }
 
         let goal = goal.into();
@@ -521,21 +539,51 @@ mod tests {
         materialized_datalog_view.poll();
         assert!(materialized_datalog_view.safe);
         assert_eq!(materialized_datalog_view.len(), 9);
-        println!("Before");
-        materialized_datalog_view.query_binary::<NodeIndex, NodeIndex>("tc", (ANY_VALUE, ANY_VALUE)).unwrap()
-            .for_each(|(&a, &b)| {
-                println!("({}, {})", a, b)
-            });
         materialized_datalog_view.retract_rule(rule!{ tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)] });
         materialized_datalog_view.poll();
-        println!("After");
-        materialized_datalog_view.query_binary::<NodeIndex, NodeIndex>("tc", (ANY_VALUE, ANY_VALUE)).unwrap()
-            .for_each(|(&a, &b)| {
-                println!("({}, {})", a, b)
-            });
         assert_eq!(materialized_datalog_view.len(), 6);
         materialized_datalog_view.retract_rule(rule!{ tc(?x, ?y) <- [e(?x, ?y)] });
         materialized_datalog_view.poll();
         assert_eq!(materialized_datalog_view.len(), 3);
+    }
+
+    #[test]
+    fn integration_test_triangle_query() {
+        let tc_program = program! {
+            tc(?a, ?b) <- [e(?a, ?b), e(?b, ?c)],
+            t(?a, ?b, ?c) <- [e(?a, ?b), e(?b, ?c), e(?c, ?a)],
+        };
+
+        let mut materialized_datalog_view = MaterializedDatalogView::new(tc_program);
+        vec![
+            (1, 2),
+            (2, 3),
+            (3, 1),
+            //
+            (4, 5),
+            (5, 6)
+        ]
+            .into_iter()
+            .for_each(|edge: Edge| {
+                materialized_datalog_view.push_fact("e", edge);
+            });
+        materialized_datalog_view.poll();
+        assert_eq!(materialized_datalog_view.len(), 8);
+
+        type Triangle = (NodeIndex, NodeIndex, NodeIndex);
+        let actual_all: HashSet<Triangle> =
+            materialized_datalog_view
+                .query_ternary("t", (ANY_VALUE, ANY_VALUE, ANY_VALUE))
+                .unwrap()
+                .map(|(x, y, z)| (*x, *y, *z))
+                .collect();
+        let expected_all: HashSet<Triangle> = vec![
+            (1, 2, 3),
+            (2, 3, 1),
+            (3, 1, 2),
+        ]
+            .into_iter()
+            .collect();
+        assert_eq!(expected_all, actual_all);
     }
 }

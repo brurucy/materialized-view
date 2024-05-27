@@ -9,10 +9,12 @@ pub enum Term<T: Hash> {
     Const(T)
 }
 
+#[allow(non_snake_case)]
 pub fn Var(name: &str) -> Term<String> {
     return Term::Var(name.to_string())
 }
 
+#[allow(non_snake_case)]
 pub fn Const<T: Hash>(value: T) -> Term<T> {
     return Term::Const(value)
 }

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream, ZSet};
+use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
 use crate::builders::rule::RuleIdentifier;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
@@ -46,7 +46,7 @@ pub type RuleSink = CollectionHandle<InternedRule, Weight>;
 pub type FactSource = OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>;
 pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
     let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
-    // Set the core count to whatever is available
+    // TODO! Set the core count to whatever is available
         Runtime::init_circuit(8, |circuit| {
             let (rule_source, rule_sink) =
                 circuit.add_input_zset::<InternedRule, Weight>();
@@ -73,6 +73,12 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
             });
             let end_for_grounding = rule_source.index_with(|(id, head, body)| ((*id, body.len()), (head.0, encode_atom_terms(&head.1))));
             let empty_rewrites = rule_source.index_with(|(rule_id, _head, _body)| ((*rule_id, 0), EncodedRewrite::default()));
+            // 0 - tc(?x, ?y) <- e(?x, ?y)
+            // 1 - tc(?x, ?z) <- e(?x, ?y), tc(?y, ?z)
+            // ((0, 0), {})
+            // ((1, 0), {})
+
+            // t(a, b, c) <- e(a, b), e(b, c), e(c, a)
 
             let fact_index = fact_source
                 .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
@@ -98,15 +104,8 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                             &iteration,
                             |key, rewrite, (current_body_atom_symbol, current_body_atom)| {
                                 let encoded_atom = apply_rewrite(&rewrite, &current_body_atom);
-
-                                if !is_encoded_atom_ground(&encoded_atom) {
-                                    return Some((
-                                        (*current_body_atom_symbol, project_encoded_atom(&encoded_atom)),
-                                        (*key, encoded_atom, *rewrite),
-                                    ));
-                                }
-
-                                None
+                                
+                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*key, encoded_atom, *rewrite), ))
                             },
                         );
 
