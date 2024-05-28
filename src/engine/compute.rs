@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash, Hasher};
-use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
+use dbsp::{ChildCircuit, Circuit, CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, RootCircuit, Runtime, Stream};
 use dbsp::operator::FilterMap;
-use crate::builders::rule::RuleIdentifier;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
-use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
+use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
 fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentifier, Vec<usize>)> {
@@ -117,58 +116,73 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                     Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
                 });
 
-            let (_, edb_union_idb, _) = circuit
-                .recursive(
-                    |child,
-                     (idb_index, _edb_union_idb, rewrites): (
-                         Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
-                         Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
-                         Stream<_, OrdIndexedZSet<LastHash, EncodedRewrite, Weight>>, // TODO: type alias the u64 to bodyprefixhash or w/e name
-                     )| {
-                        let iteration = iteration.delta0(child);
-                        let edb_index = fact_index.delta0(child);
-                        let edb = fact_source.delta0(child);
-                        let empty_rewrites = empty_rewrites.delta0(child);
-                        let end_for_grounding = end_for_grounding.delta0(child);
-                        let unique_column_sets = unique_column_sets.delta0(child);
+            let traces = circuit.fixedpoint(|child| {
+                let (vars, input_streams) = dbsp::operator::recursive::RecursiveStreams::<_>::new(child);
+                let output_streams = (|child,
+                                       (idb_index, _edb_union_idb, rewrites): (
+                                           Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
+                                           Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
+                                           Stream<_, OrdIndexedZSet<LastHash, EncodedRewrite, Weight>>, // TODO: type alias the u64 to bodyprefixhash or w/e name
+                                       )| {
+                    let iteration = iteration.delta0(child);
+                    let edb_index = fact_index.delta0(child);
+                    let edb = fact_source.delta0(child);
+                    let empty_rewrites = empty_rewrites.delta0(child);
+                    let end_for_grounding = end_for_grounding.delta0(child);
+                    let unique_column_sets = unique_column_sets.delta0(child);
 
-                        let previous_propagated_rewrites = rewrites.join_index(
-                            &iteration,
-                            |_key, rewrite, (new_hash, (current_body_atom_symbol, current_body_atom))| {
-                                let encoded_atom = apply_rewrite(&rewrite, &current_body_atom);
+                    let previous_propagated_rewrites = rewrites.join_index(
+                        &iteration,
+                        |_key, rewrite, (new_hash, (current_body_atom_symbol, current_body_atom))| {
+                            let encoded_atom = apply_rewrite(&rewrite, &current_body_atom);
 
-                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, *rewrite), ))
-                            },
-                        );
+                            Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, *rewrite), ))
+                        },
+                    );
 
-                        let rewrite_product =
-                            idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, (new_hash, encoded_fresh_atom, rewrite)| {
-                                let unification = unify_encoded_atom_with_encoded_rewrite(*encoded_fresh_atom, *encoded_fact).unwrap();
-                                let extended_rewrite = merge_right_rewrite_into_left(*rewrite, unification);
+                    let idb_index = edb_index
+                        .plus(&idb_index)
+                        .distinct();
+                    let rewrite_product =
+                        idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, (new_hash, encoded_fresh_atom, rewrite)| {
+                            let unification = unify_encoded_atom_with_encoded_rewrite(*encoded_fresh_atom, *encoded_fact).unwrap();
+                            let extended_rewrite = merge_right_rewrite_into_left(*rewrite, unification);
 
-                                Some((*new_hash, extended_rewrite))
-                            });
+                            Some((*new_hash, extended_rewrite))
+                        }).distinct();
 
-                        let fresh_facts = end_for_grounding
-                            .join_index(&rewrite_product, |_last_hash, (_new_hash, (head_atom_symbol, head_atom)), final_substitution| {
-                                let fresh_encoded_fact = apply_rewrite(&final_substitution, head_atom);
+                    let fresh_facts = end_for_grounding
+                        .join_index(&rewrite_product, |_last_hash, (_new_hash, (head_atom_symbol, head_atom)), final_substitution| {
+                            let fresh_encoded_fact = apply_rewrite(&final_substitution, head_atom);
 
-                                Some((*head_atom_symbol, fresh_encoded_fact))
-                            });
+                            Some((*head_atom_symbol, fresh_encoded_fact))
+                        });
 
-                        let fresh_indexed_facts = fresh_facts
-                            .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
-                                Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
-                            });
+                    let fresh_indexed_facts = fresh_facts
+                        .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
+                            Some(((*relation_symbol, project_encoded_fact(fact, column_set)), *fact))
+                        });
+                        /*.distinct()*/;
 
-                        let idb_index_out = edb_index.plus(&fresh_indexed_facts);
-                        let edb_union_idb_out = edb.plus(&fresh_facts);
-                        let rewrites_out = empty_rewrites.plus(&rewrite_product);
+                    let idb_index_out = fresh_indexed_facts;
+                    let edb_union_idb_out = edb.plus(&fresh_facts)
+                        .distinct();
+                    let rewrites_out = empty_rewrites.plus(&rewrite_product);
 
-                        Ok((idb_index_out, edb_union_idb_out.map(|(key, value)| (*key, *value)), rewrites_out))
-                    },
-                )
-                .unwrap();
+                    let stream = edb_union_idb_out.map(|(key, value)| (*key, *value));
+
+                    Ok((idb_index_out, stream, rewrites_out))
+                })(child, input_streams)?;
+                //let output_streams = dbsp::operator::recursive::RecursiveStreams::<_>::distinct(output_streams);
+                dbsp::operator::recursive::RecursiveStreams::<_>::connect(&output_streams, vars);
+                Ok(dbsp::operator::recursive::RecursiveStreams::<_>::export(output_streams))
+            }).unwrap();
+            let (_, edb_union_idb, _): (_, Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>, _) = <(
+                Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
+                Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
+                Stream<_, OrdIndexedZSet<LastHash, EncodedRewrite, Weight>>, // TODO: type alias the u64 to bodyprefixhash or w/e name
+            ) as dbsp::operator::recursive::RecursiveStreams::<ChildCircuit<RootCircuit>>>::consolidate(traces);
+                //.unwrap();
 
             let inferences_out = edb_union_idb
                 //.distinct()
