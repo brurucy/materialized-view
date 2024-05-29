@@ -21,7 +21,7 @@ impl StorageLayer {
             return if weight > 0 {
                 consolidated.insert(fact)
             } else {
-                consolidated.remove(&fact)
+                consolidated.swap_remove(&fact)
             }
         }
 
@@ -30,7 +30,7 @@ impl StorageLayer {
         if weight > 0 {
             fresh_fact_storages.1.insert(fact);
         } else {
-            fresh_fact_storages.1.remove(&fact);
+            fresh_fact_storages.1.swap_remove(&fact);
         }
 
         self.inner.insert(*relation_identifier, fresh_fact_storages);

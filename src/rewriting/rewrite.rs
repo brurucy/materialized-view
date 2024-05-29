@@ -1,6 +1,7 @@
 use crate::interning::herbrand_universe::InternedTerm;
 use crate::rewriting::atom::{EncodedAtom, TERM_COUNT_BITS, TERM_COUNT_MASK, TERM_BITS_MASK, TERM_BITS};
 
+// TODO Turn this into [32; u8]
 pub type EncodedRewrite = u128;
 const VARIABLE_BITS: u128 = 3;
 const SUBSTITUTION_COUNT_BITS: u128 = 3;
