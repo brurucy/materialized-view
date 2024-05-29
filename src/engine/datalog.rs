@@ -5,11 +5,107 @@ use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::builders::fact::Fact;
 use crate::builders::goal::{Goal, pattern_match};
 use crate::builders::rule::Rule;
-use crate::engine::compute::ComputeLayer;
+use crate::engine::compute::{ComputeLayer, Weight};
 use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::InternmentLayer;
 use crate::rewriting::atom::{decode_fact, encode_fact};
-
+/// Database-agnostic just-in-time iterative dynamic incremental materialized views for the masses!
+/// * **Materialized View**: A query that gets updated once new data arrives
+/// * **Incremental Materialized View**: Materialized views whose update latency is proportional to
+/// the size of the update
+/// * **Dynamic Incremental Materialized View**: Materialized views that can be "shortened" or "extended",
+/// with the time taken to adjust to this change being proportional to the new updates generated from this change
+/// * **Iterative dynamic incremental materialized views**: Dynamic materialized views that support recursive
+/// statements (that of course also get incrementally maintained)
+/// * **Database-agnostic just-in-time iterative dynamic incremental materialized views**: All that was said so far, with
+/// zero compilation required **and** being easily integrated with any database engine!
+///
+/// `MaterializedDatalogView` is both a **graph** computation engine, incrementally maintaining recursive
+/// and non-recursive queries, and a storage engine. The storage engine controls access to the materialisation by restricting it
+/// to happen over two views:
+/// 1. Consolidated - The always up to date state of the materialisation.
+/// 2. Frontier - The most recent updates. You can query the frontier each time after a `poll` happens
+/// to persist the materialisation in whichever database you are using.
+///
+/// # Examples
+///
+/// ```
+/// use materialized_view::*;
+///
+/// type NodeIndex = isize;
+/// type Edge = (NodeIndex, NodeIndex);
+///
+/// // The following recursive query is "equivalent" to this SQL statement:
+/// // WITH RECURSIVE reaches(x, y) AS (
+/// //    SELECT x, y FROM edge
+/// //
+/// //    UNION ALL
+/// //
+/// //    SELECT e.x, r.y
+/// //    FROM edge e
+/// //    JOIN reaches r ON e.y = r.x
+/// // )
+/// let recursive_query = program! {
+/// reaches(?x, ?y) <- [edge(?x, ?y)],
+/// reaches(?x, ?z) <- [edge(?x, ?y), reaches(?y, ?z)]
+/// };
+/// let mut dynamic_view = MaterializedDatalogView::new(recursive_query);
+///
+/// // Add some edges.
+/// dynamic_view.push_fact("edge", (1isize, 2));
+/// dynamic_view.push_fact("edge", (2isize, 3));
+/// dynamic_view.push_fact("edge", (3isize, 4));
+/// dynamic_view.push_fact("edge", (4isize, 5));
+/// dynamic_view.push_fact("edge", (5isize, 6));
+///
+/// // Then poll to incrementally update the view
+/// dynamic_view.poll();
+///
+/// // Confirm that 6 is reachable from 1
+/// assert!(dynamic_view.contains("reaches", (1isize, 6)).unwrap());
+///
+/// // Retract a fact
+/// dynamic_view.retract_fact("edge", (5isize, 6));
+/// dynamic_view.poll();
+///
+/// // Query everything that is reachable from 1
+/// dynamic_view
+///     // The arity of the relation being queried must be specified. e.g to query
+///     // a relation with two columns, `query_binary` ought to be used.
+///     .query_binary::<NodeIndex, NodeIndex>("reaches", (Some(1), ANY_VALUE))
+///     .unwrap()
+///     .for_each(|edge| println!("{} is reachable from 1", *edge.1));
+///
+/// // You are also able to query only the __most recent__ updates.
+/// dynamic_view
+///     // The arity of the relation being queried must be specified. e.g to query
+///     // a relation with two columns, `query_binary` ought to be used.
+///     .query_frontier_binary::<NodeIndex, NodeIndex>("reaches", (Some(1), ANY_VALUE))
+///     .unwrap()
+///     // The second argument is the weight. It represents whether the given value should be added
+///     // or retracted.
+///     .for_each(|((from, to), weight)| println!("Diff: {} - Value: ({}, {})", weight, *from, *to));
+///
+/// // By extending the query with another query, it is possible to incrementally query the incrementally
+/// // maintained queries
+/// dynamic_view
+///     // Queries can also be assembled both a macro a-la program! called rule!:
+///     // rule! { reachableFromOne(1isize, ?x) <- reaches(1isize, ?x) }
+///     .push_rule((("reachableFromOne", (Const(1isize), Var("x"))), vec![("reaches", (Const(1isize), Var("x")))]));
+///
+/// dynamic_view.poll();
+/// dynamic_view
+///     .query_binary::<NodeIndex, NodeIndex>("reachableFromOne", (Some(1), ANY_VALUE))
+///     .unwrap()
+///     .for_each(|edge| println!("{} is reachable from 1", edge.1));
+///
+/// // And of course, you can retract rules as well!
+/// assert!(dynamic_view.contains("reachableFromOne", (1, 5)).unwrap());
+/// dynamic_view
+///     .retract_rule((("reachableFromOne", (Const(1isize), Var("x"))), vec![("reaches", (Const(1isize), Var("x")))]));
+/// dynamic_view.poll();
+/// assert!(!dynamic_view.contains("reachableFromOne", (1, 5)).unwrap());
+/// ```
 pub struct MaterializedDatalogView {
     compute_layer: ComputeLayer,
     internment_layer: InternmentLayer,
@@ -20,7 +116,7 @@ pub struct MaterializedDatalogView {
 
 pub const EMPTY_PROGRAM: Vec<Rule> = vec![];
 
-pub type RelationSymbol<'a> = &'a str;
+type RelationSymbol<'a> = &'a str;
 
 pub struct PollingError;
 
@@ -106,7 +202,7 @@ impl MaterializedDatalogView {
     pub fn query_unary<'a, T: 'static>(
         &self,
         relation_symbol: RelationSymbol,
-        goal: impl Into<Goal>
+        goal: impl Into<Goal>,
     ) -> Result<impl Iterator<Item=(&T, )>, PollingError> {
         if !self.safe() {
             return Err(PollingError)
@@ -115,7 +211,7 @@ impl MaterializedDatalogView {
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
-        let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
+        let fact_storage = &self.storage_layer.get_relations(&hashed_relation_symbol).1;
 
         Ok(fact_storage
             .iter()
@@ -126,10 +222,33 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term,)
             }))
     }
+    pub fn query_frontier_unary<'a, T: 'static>(
+        &self,
+        relation_symbol: RelationSymbol,
+        goal: impl Into<Goal>,
+    ) -> Result<impl Iterator<Item=((&T, ), Weight)>, PollingError> {
+        if !self.safe() {
+            return Err(PollingError)
+        }
+
+        let goal = goal.into();
+        let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let frontier = &self.storage_layer.get_relations(&hashed_relation_symbol).0;
+
+        Ok(frontier
+            .iter()
+            .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms.0))
+            .map(|(encoded_fact, weight)| {
+                let resolved_interned_constant_term = self.internment_layer.resolve_interned_constant::<T>(decode_fact(*encoded_fact)[0]).unwrap();
+
+                ((resolved_interned_constant_term,), *weight)
+            }))
+    }
     pub fn query_binary<'a, T: 'static, R: 'static>(
         &self,
         relation_symbol: RelationSymbol,
-        goal: impl Into<Goal>
+        goal: impl Into<Goal>,
     ) -> Result<impl Iterator<Item=(&T, &R)>, PollingError> {
         if !self.safe() {
             return Err(PollingError);
@@ -138,7 +257,7 @@ impl MaterializedDatalogView {
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
-        let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
+        let fact_storage = &self.storage_layer.get_relations(&hashed_relation_symbol).1;
 
         Ok(fact_storage
             .iter()
@@ -150,10 +269,34 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two)
             }))
     }
+    pub fn query_frontier_binary<'a, T: 'static, R: 'static>(
+        &self,
+        relation_symbol: RelationSymbol,
+        goal: impl Into<Goal>,
+    ) -> Result<impl Iterator<Item=((&T, &R), Weight)>, PollingError> {
+        if !self.safe() {
+            return Err(PollingError)
+        }
+
+        let goal = goal.into();
+        let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let frontier = &self.storage_layer.get_relations(&hashed_relation_symbol).0;
+
+        Ok(frontier
+            .iter()
+            .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms.0))
+            .map(|(encoded_fact, weight)| {
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(decode_fact(*encoded_fact)[0]).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(decode_fact(*encoded_fact)[1]).unwrap();
+
+                ((resolved_interned_constant_term_one, resolved_interned_constant_term_two), *weight)
+            }))
+    }
     pub fn query_ternary<'a, T: 'static, R: 'static, S: 'static>(
         &self,
         relation_symbol: RelationSymbol,
-        goal: impl Into<Goal>
+        goal: impl Into<Goal>,
     ) -> Result<impl Iterator<Item=(&T, &R, &S)>, PollingError> {
         if !self.safe() {
             return Err(PollingError);
@@ -162,7 +305,7 @@ impl MaterializedDatalogView {
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
-        let fact_storage = self.storage_layer.get_relation(&hashed_relation_symbol);
+        let fact_storage = &self.storage_layer.get_relations(&hashed_relation_symbol).1;
 
         Ok(fact_storage
             .iter()
@@ -175,6 +318,31 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two, resolved_interned_constant_term_three)
             }))
     }
+    pub fn query_frontier_ternary<'a, T: 'static, R: 'static, S: 'static>(
+        &self,
+        relation_symbol: RelationSymbol,
+        goal: impl Into<Goal>,
+    ) -> Result<impl Iterator<Item=((&T, &R, &S), Weight)>, PollingError> {
+        if !self.safe() {
+            return Err(PollingError)
+        }
+
+        let goal = goal.into();
+        let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
+        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let frontier = &self.storage_layer.get_relations(&hashed_relation_symbol).0;
+
+        Ok(frontier
+            .iter()
+            .filter(move |interned_constant_terms| pattern_match(&resolved_goal, &interned_constant_terms.0))
+            .map(|(encoded_fact, weight)| {
+                let resolved_interned_constant_term_one = self.internment_layer.resolve_interned_constant::<T>(decode_fact(*encoded_fact)[0]).unwrap();
+                let resolved_interned_constant_term_two = self.internment_layer.resolve_interned_constant::<R>(decode_fact(*encoded_fact)[1]).unwrap();
+                let resolved_interned_constant_term_three = self.internment_layer.resolve_interned_constant::<S>(decode_fact(*encoded_fact)[2]).unwrap();
+
+                ((resolved_interned_constant_term_one, resolved_interned_constant_term_two, resolved_interned_constant_term_three), *weight)
+            }))
+    }
     fn step(&mut self) {
         self.compute_layer.step();
     }
@@ -182,6 +350,7 @@ impl MaterializedDatalogView {
         self.compute_layer.consolidate_into_storage_layer(&mut self.storage_layer)
     }
     pub fn poll(&mut self) {
+        self.storage_layer.move_frontier();
         self.step();
         self.consolidate();
         self.safe = true;

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use datalog_rule_macro::rule;
+    use datalog_syntax_macros::rule;
     use datalog_syntax::*;
     use pretty_assertions::assert_eq;
 

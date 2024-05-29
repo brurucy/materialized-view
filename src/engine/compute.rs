@@ -2,11 +2,10 @@ use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash, Hasher};
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
-use crate::builders::rule::RuleIdentifier;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
-use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
+use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
 fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentifier, Vec<usize>)> {
@@ -16,7 +15,6 @@ fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentif
     for body_atom in atoms {
         let index: Vec<_> = body_atom.1
             .iter()
-            // A term that is 0, is not present
             .filter(|(_is_var, term)| *term != 0)
             .enumerate()
             .flat_map(|(idx, (is_var, inner))| match is_var {
@@ -40,18 +38,16 @@ fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentif
     out
 }
 
-pub type ProjectedEncodedFact = EncodedAtom;
-pub type BodyAtomPosition = usize;
-pub type Weight = isize;
-pub type FactSink = CollectionHandle<RelationIdentifier, (EncodedAtom, Weight)>;
-pub type RuleSink = CollectionHandle<InternedRule, Weight>;
-pub type FactSource = OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>;
-pub type LastHash = u64;
-pub type NewHash = u64;
+pub(crate) type ProjectedEncodedFact = EncodedAtom;
+pub(crate) type Weight = isize;
+pub(crate) type FactSink = CollectionHandle<RelationIdentifier, (EncodedAtom, Weight)>;
+pub(crate) type RuleSink = CollectionHandle<InternedRule, Weight>;
+pub(crate) type FactSource = OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>;
+pub(crate) type LastHash = u64;
+pub(crate) type NewHash = u64;
 pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
     let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
-    // TODO! Set the core count to whatever is available
-        Runtime::init_circuit(8, |circuit| {
+        Runtime::init_circuit(std::thread::available_parallelism().unwrap().get(), |circuit| {
             let (rule_source, rule_sink) =
                 circuit.add_input_zset::<InternedRule, Weight>();
             let (fact_source, fact_sink) =
@@ -68,18 +64,18 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 .flat_map_index(compute_unique_column_sets)
                 .distinct();
 
-            let rules_by_id = rule_source.map(|(id, head, body)| (head.clone(), body.clone()));
+            let rules_by_id = rule_source.map(|(_id, head, body)| (head.clone(), body.clone()));
 
             let iteration = rules_by_id
-                .flat_map_index(|(head, body)| {
+                .flat_map_index(|(_head, body)| {
                 let mut body_subsets = vec![];
                 let mut last_hash =0;
 
                 for i in 0..body.len() {
                     let mut rs = new_random_state().build_hasher();
                     last_hash.hash(&mut rs);
-                    &body[i].hash(&mut rs);
-                    let this_hash = rs.finish(); // please use interner instead for collision resistance
+                    body[i].hash(&mut rs);
+                    let this_hash = rs.finish();
                     body_subsets.push((last_hash as LastHash, (this_hash as NewHash, (body[i].0, encode_atom_terms(&body[i].1)))));
                     last_hash = this_hash;
                 }
@@ -93,24 +89,16 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 for i in 0..body.len() {
                     let mut rs = new_random_state().build_hasher();
                     last_hash.hash(&mut rs);
-                    &body[i].hash(&mut rs);
-                    let this_hash = rs.finish(); // please use interner instead for collision resistance
+                    body[i].hash(&mut rs);
+                    let this_hash = rs.finish();
                     last_hash = this_hash;
                 }
 
                 (last_hash as LastHash, (0_u64 as NewHash, (head.0, encode_atom_terms(&head.1))))
             });
             let empty_rewrites = rule_source
-                .index_with(|(rule_id, _head, _body)| (0u64, EncodedRewrite::default()))
+                .index_with(|(_rule_id, _head, _body)| (0u64, EncodedRewrite::default()))
                 .distinct();
-            // 0 - tc(?x, ?y) <- e(?x, ?y) -- e(?x, ?y)
-            // 1 - tc(?x, ?z) <- e(?x, ?y) -- e(?x, ?y), tc(?y, ?z) --
-            // ((0, 0), {})
-            // ((1, 0), {})
-
-            // tc(a, b) // 1 <- e(a, b) // 0
-            // tc(a, b) // 2 <- e(a, b) // 0, e(b, c) // 1
-            // t(a, b, c) // 2 <- e(a, b) // 0, e(b, c) // 1, e(c, a) // 2
 
             let fact_index = fact_source
                 .join_index(&unique_column_sets, |relation_symbol, fact, column_set| {
@@ -123,7 +111,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                      (idb_index, _edb_union_idb, rewrites): (
                          Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
                          Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
-                         Stream<_, OrdIndexedZSet<LastHash, EncodedRewrite, Weight>>, // TODO: type alias the u64 to bodyprefixhash or w/e name
+                         Stream<_, OrdIndexedZSet<LastHash, EncodedRewrite, Weight>>,
                      )| {
                         let iteration = iteration.delta0(child);
                         let edb_index = fact_index.delta0(child);
@@ -216,12 +204,7 @@ impl ComputeLayer {
             .iter()
             .map(|((hashed_relation_symbol, encoded_fact), _, weight)| (hashed_relation_symbol, encoded_fact, weight))
             .for_each(|(hashed_relation_symbol, encoded_fact, weight)| {
-
-                if weight.signum() > 0 {
-                    storage_layer.push(&hashed_relation_symbol, encoded_fact);
-                } else {
-                    storage_layer.remove(&hashed_relation_symbol, &encoded_fact);
-                }
+                storage_layer.update(&hashed_relation_symbol, encoded_fact, weight);
             });
     }
 }

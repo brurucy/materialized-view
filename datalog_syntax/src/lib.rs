@@ -81,60 +81,6 @@ impl Debug for Atom {
     }
 }
 
-pub enum Matcher {
-    Any,
-    Constant(TypedValue),
-}
-
-pub struct Query<'a> {
-    pub matchers: Vec<Matcher>,
-    pub symbol: &'a str,
-}
-
-pub struct QueryBuilder<'a> {
-    pub query: Query<'a>,
-}
-
-impl<'a> QueryBuilder<'a> {
-    pub fn new(relation: &'a str) -> Self {
-        QueryBuilder {
-            query: Query {
-                matchers: vec![],
-                symbol: relation,
-            },
-        }
-    }
-    pub fn with_any(&mut self) {
-        self.query.matchers.push(Matcher::Any);
-    }
-    pub fn with_constant(&mut self, value: TypedValue) {
-        self.query.matchers.push(Matcher::Constant(value))
-    }
-}
-
-impl<'a> From<QueryBuilder<'a>> for Query<'a> {
-    fn from(value: QueryBuilder<'a>) -> Self {
-        value.query
-    }
-}
-
-#[macro_export]
-macro_rules! build_query {
-    ($relation:ident ( $( $matcher:tt ),* $(,)? )) => {{
-        let mut builder = QueryBuilder::new(stringify!($relation));
-        $(
-            build_query!(@matcher builder, $matcher);
-        )*
-        builder.query
-    }};
-    (@matcher $builder:expr, _) => {{
-        $builder.with_any();
-    }};
-    (@matcher $builder:expr, $value:expr) => {{
-        $builder.with_constant($value);
-    }};
-}
-
 #[derive(Ord, PartialOrd, Eq, PartialEq, Clone, Hash)]
 pub struct Rule {
     pub head: Atom,

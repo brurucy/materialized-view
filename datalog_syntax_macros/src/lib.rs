@@ -2,7 +2,7 @@ extern crate proc_macro;
 // This is 100% code gore please don't look :)
 use proc_macro::TokenStream;
 use quote::quote;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use syn::parse::{Parse, ParseStream};
 use syn::{bracketed, parenthesized, Expr, Ident, Result, Token};
 
@@ -24,12 +24,13 @@ struct RuleMacroInput {
 impl Parse for RuleMacroInput {
     fn parse(input: ParseStream) -> Result<Self> {
         let head = input.parse::<AtomArgs>()?;
+        let mut variables: HashSet<String> = Default::default();
         let mut distinguished_variables: HashMap<String, (&Ident, bool)> = head
             .args
             .iter()
             .filter(|term| matches!(term, TermArg::Variable(_)))
             .map(|variable| match variable {
-                TermArg::Variable(ident) => (ident.to_string(), (ident, false)),
+                TermArg::Variable(ident) => { variables.insert(ident.to_string()); (ident.to_string(), (ident, false)) },
                 _ => unreachable!(),
             })
             .collect();
@@ -40,7 +41,7 @@ impl Parse for RuleMacroInput {
         let body: syn::punctuated::Punctuated<AtomArgs, Token![,]> =
             content2.parse_terminated(AtomArgs::parse)?;
         let body_vec: Vec<AtomArgs> = body.into_iter().collect();
-        body_vec.iter().for_each(|body_atom| {
+        for body_atom in &body_vec {
             body_atom
                 .args
                 .iter()
@@ -48,6 +49,7 @@ impl Parse for RuleMacroInput {
                 .for_each(|variable| match variable {
                     TermArg::Variable(ident) => {
                         let owned_ident = ident.to_string();
+                        variables.insert(owned_ident.clone());
 
                         if distinguished_variables.contains_key(&owned_ident) {
                             (distinguished_variables.get_mut(&owned_ident).unwrap()).1 = true;
@@ -55,15 +57,28 @@ impl Parse for RuleMacroInput {
                     }
                     _ => unreachable!(),
                 });
-        });
+            if body_atom.args.len() > 3 {
+                return Err(syn::Error::new(
+                    body_atom.name.span(),
+                    "this atom has more terms than are allowed"
+                ))
+            }
+        }
 
         for (key, value) in distinguished_variables {
             if !value.1 {
                 return Err(syn::Error::new(
                     value.0.span(),
-                    format!("variable {} not found in the body", key),
+                    format!("variable {} was not found in the body", key),
                 ));
             }
+        }
+
+        if variables.len() > 5 {
+            return Err(syn::Error::new(
+                input.span(),
+                "This rule has more variables than are allowed"
+            ))
         }
 
         Ok(RuleMacroInput {

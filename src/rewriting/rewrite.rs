@@ -1,10 +1,6 @@
 use crate::interning::herbrand_universe::InternedTerm;
 use crate::rewriting::atom::{EncodedAtom, TERM_COUNT_BITS, TERM_COUNT_MASK, TERM_BITS_MASK, TERM_BITS};
 
-// [ X => u19, Y => u19, Z => u19, W => u19]
-// 128 / 19 = 6.7 ~ 5 variables
-// 10 variables
-// u128 to [16; u8]
 pub type EncodedRewrite = u128;
 const VARIABLE_BITS: u128 = 3;
 const SUBSTITUTION_COUNT_BITS: u128 = 3;

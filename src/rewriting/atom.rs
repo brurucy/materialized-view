@@ -124,14 +124,9 @@ pub fn decode_fact(fact: EncodedAtom) -> InternedConstantTerms {
     decoded_fact
 }
 
-const GROUND_ATOM_MASK: u64 = (1 << 2) | (1 << 22) | (1 << 42);
-pub fn is_encoded_atom_ground(atom: &EncodedAtom) -> bool {
-    return (atom & GROUND_ATOM_MASK) == 0
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::rewriting::atom::{decode_fact, encode_atom_terms, encode_fact, is_encoded_atom_ground, project_encoded_atom, project_encoded_fact};
+    use crate::rewriting::atom::{decode_fact, encode_atom_terms, encode_fact, project_encoded_atom, project_encoded_fact};
 
     #[test]
     fn test_encode_fact() {
@@ -200,20 +195,5 @@ mod tests {
         let expected_projected_atom = [1usize, 0usize, 0usize];
 
         assert_eq!(expected_projected_atom, decode_fact(project_encoded_atom(&encode_atom_terms(&atom))));
-    }
-    
-    #[test]
-    fn test_is_ground() {
-        let encoded_atom_0 = encode_atom_terms(&[(false, 2usize), (true, 1usize), (false, 0usize)]);
-        assert!(!is_encoded_atom_ground(&encoded_atom_0));
-
-        let encoded_atom_1 = encode_atom_terms(&[(true, 1), (false, 0), (false, 0)]);
-        assert!(!is_encoded_atom_ground(&encoded_atom_1));
-
-        let encoded_atom_2 = encode_atom_terms(&[(false, 2), (false, 3), (false, 0)]);
-        assert!(is_encoded_atom_ground(&encoded_atom_2));
-
-        let encoded_fact = encode_fact(&[2, 3, 0]);
-        assert!(is_encoded_atom_ground(&encoded_fact));
     }
 }
