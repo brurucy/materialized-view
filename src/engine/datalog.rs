@@ -32,7 +32,7 @@ use crate::rewriting::atom::{decode_fact, encode_fact};
 /// ```
 /// use materialized_view::*;
 ///
-/// type NodeIndex = isize;
+/// type NodeIndex = i32;
 /// type Edge = (NodeIndex, NodeIndex);
 ///
 /// // The following recursive query is "equivalent" to this SQL statement:
@@ -52,20 +52,20 @@ use crate::rewriting::atom::{decode_fact, encode_fact};
 /// let mut dynamic_view = MaterializedDatalogView::new(recursive_query);
 ///
 /// // Add some edges.
-/// dynamic_view.push_fact("edge", (1isize, 2));
-/// dynamic_view.push_fact("edge", (2isize, 3));
-/// dynamic_view.push_fact("edge", (3isize, 4));
-/// dynamic_view.push_fact("edge", (4isize, 5));
-/// dynamic_view.push_fact("edge", (5isize, 6));
+/// dynamic_view.push_fact("edge", (1, 2));
+/// dynamic_view.push_fact("edge", (2, 3));
+/// dynamic_view.push_fact("edge", (3, 4));
+/// dynamic_view.push_fact("edge", (4, 5));
+/// dynamic_view.push_fact("edge", (5, 6));
 ///
 /// // Then poll to incrementally update the view
 /// dynamic_view.poll();
 ///
 /// // Confirm that 6 is reachable from 1
-/// assert!(dynamic_view.contains("reaches", (1isize, 6)).unwrap());
+/// assert!(dynamic_view.contains("reaches", (1, 6)).unwrap());
 ///
 /// // Retract a fact
-/// dynamic_view.retract_fact("edge", (5isize, 6));
+/// dynamic_view.retract_fact("edge", (5, 6));
 /// dynamic_view.poll();
 ///
 /// // Query everything that is reachable from 1
@@ -91,7 +91,7 @@ use crate::rewriting::atom::{decode_fact, encode_fact};
 /// dynamic_view
 ///     // Queries can also be assembled both a macro a-la program! called rule!:
 ///     // rule! { reachableFromOne(1isize, ?x) <- reaches(1isize, ?x) }
-///     .push_rule((("reachableFromOne", (Const(1isize), Var("x"))), vec![("reaches", (Const(1isize), Var("x")))]));
+///     .push_rule((("reachableFromOne", (Const(1), Var("x"))), vec![("reaches", (Const(1), Var("x")))]));
 ///
 /// dynamic_view.poll();
 /// dynamic_view
@@ -102,7 +102,7 @@ use crate::rewriting::atom::{decode_fact, encode_fact};
 /// // And of course, you can retract rules as well!
 /// assert!(dynamic_view.contains("reachableFromOne", (1, 5)).unwrap());
 /// dynamic_view
-///     .retract_rule((("reachableFromOne", (Const(1isize), Var("x"))), vec![("reaches", (Const(1isize), Var("x")))]));
+///     .retract_rule((("reachableFromOne", (Const(1), Var("x"))), vec![("reaches", (Const(1), Var("x")))]));
 /// dynamic_view.poll();
 /// assert!(!dynamic_view.contains("reachableFromOne", (1, 5)).unwrap());
 /// ```
