@@ -20,12 +20,12 @@ use crate::rewriting::atom::{decode_fact, encode_fact};
 /// * **Database-agnostic just-in-time iterative dynamic incremental materialized views**: All that was said so far, with
 /// zero compilation required **and** being easily integrated with any database engine!
 ///
-/// `MaterializedDatalogView` is both a **graph** computation engine, incrementally maintaining recursive
+/// `MaterializedDatalogView` is both a **property graph** computation engine, incrementally maintaining recursive
 /// and non-recursive queries, and a storage engine. The storage engine controls access to the materialisation by restricting it
 /// to happen over two views:
-/// 1. Consolidated - The always up to date state of the materialisation.
-/// 2. Frontier - The most recent updates. You can query the frontier each time after a `poll` happens
-/// to persist the materialisation in whichever database you are using.
+/// 1. Consolidated - The always-up-to-date state of the materialisation.
+/// 2. Frontier - The most recent updates. You can query the frontier each time after `poll` event happens
+/// to retrieve the latest updates to the materialisation, and then store it in whichever database you are using.
 ///
 /// # Examples
 ///
@@ -135,6 +135,25 @@ impl Debug for PollingError {
 impl Error for PollingError {}
 
 impl MaterializedDatalogView {
+    /// Pushes a fact into the materialized view.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// reaches(?x, ?y) <- [edge(?x, ?y)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("edge", (1, 2));
+    /// dynamic_view.poll();
+    ///
+    /// assert!(dynamic_view.contains("edge", (1, 2)).unwrap());
+    /// assert!(dynamic_view.contains("reaches", (1, 2)).unwrap());
+    ///
+    /// ```
     pub fn push_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         let interned_fact = self.internment_layer.intern_fact(fact.into());
@@ -145,6 +164,43 @@ impl MaterializedDatalogView {
 
         self.storage_layer.contains(&hashed_relation_symbol, &encoded_fact)
     }
+    /// Retracts facts from the materialized view.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// reaches(?x, ?y) <- [edge(?x, ?y)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("edge", (1, 2));
+    /// dynamic_view.poll();
+    /// assert!(dynamic_view.contains("edge", (1, 2)).unwrap());
+    /// assert!(dynamic_view.contains("reaches", (1, 2)).unwrap());
+    ///
+    /// dynamic_view.retract_fact("edge", (1, 2));
+    /// dynamic_view.poll();
+    /// assert!(!dynamic_view.contains("edge", (1, 2)).unwrap());
+    /// assert!(!dynamic_view.contains("reaches", (1, 2)).unwrap());
+    ///
+    /// let expected_update = vec![(-1, (1, 2))];
+    /// let actual_update_edge: Vec<((isize, (i32, i32)))> = dynamic_view
+    ///     .query_frontier_binary("edge", (ANY_VALUE, ANY_VALUE))
+    ///     .unwrap()
+    ///     .map(|((x, y), weight)| (weight, (*x, *y)))
+    ///     .collect();
+    /// assert_eq!(expected_update, actual_update_edge);
+    ///
+    /// let actual_update_reaches: Vec<((isize, (i32, i32)))> = dynamic_view
+    ///     .query_frontier_binary("reaches", (ANY_VALUE, ANY_VALUE))
+    ///     .unwrap()
+    ///     .map(|((x, y), weight)| (weight, (*x, *y)))
+    ///     .collect();
+    /// assert_eq!(expected_update, actual_update_reaches);
+    /// ```
     pub fn retract_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
         let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
         if let Some(resolved_fact) = self.internment_layer.resolve_fact(fact.into()) {
@@ -168,6 +224,28 @@ impl MaterializedDatalogView {
             self.ensure_relation_exists(&body_atom.symbol);
         });
     }
+    /// Pushes a rule into the materialized view.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// reaches(?x, ?y) <- [edge(?x, ?y)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("edge", (1, 2));
+    /// dynamic_view.push_fact("edge", (2, 3));
+    /// dynamic_view.poll();
+    /// assert!(!dynamic_view.contains("reaches", (1, 3)).unwrap());
+    ///
+    /// dynamic_view.push_rule(rule!{ reaches(?x, ?z) <- [edge(?x, ?y), reaches(?y, ?z)] });
+    /// dynamic_view.poll();
+    /// assert!(dynamic_view.contains("reaches", (1, 3)).unwrap());
+    ///
+    /// ```
     pub fn push_rule(&mut self, rule: impl Into<Rule>) {
         let rule = rule.into();
         self.ensure_rule_relations_exist(&rule);
@@ -175,6 +253,28 @@ impl MaterializedDatalogView {
 
         self.safe = false;
     }
+    /// Retracts a rule from the materialized view.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// reaches(?x, ?y) <- [edge(?x, ?y)],
+    /// reaches(?x, ?z) <- [edge(?x, ?y), reaches(?y, ?z)]
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("edge", (1, 2));
+    /// dynamic_view.push_fact("edge", (2, 3));
+    /// dynamic_view.poll();
+    /// assert!(dynamic_view.contains("reaches", (1, 3)).unwrap());
+    ///
+    /// dynamic_view.retract_rule(rule!{ reaches(?x, ?z) <- [edge(?x, ?y), reaches(?y, ?z)] });
+    /// dynamic_view.poll();
+    /// assert!(!dynamic_view.contains("reaches", (1, 3)).unwrap());
+    /// ```
     pub fn retract_rule(&mut self, rule: impl Into<Rule>) {
         let rule = rule.into();
         if let Some(resolved_rule) = &self.internment_layer.resolve_rule(rule) {
@@ -183,6 +283,25 @@ impl MaterializedDatalogView {
 
         self.safe = false;
     }
+    /// Checks whether a fact is true in the consolidated view. Throws an error if a poll is
+    /// needed to obtain correct results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// reaches(?x, ?y) <- [edge(?x, ?y)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("edge", (1, 2));
+    /// dynamic_view.push_fact("edge", (2, 3));
+    /// println!("{}", dynamic_view.contains("reaches", (2, 3)).unwrap_err());
+    /// dynamic_view.poll();
+    /// println!("{}", dynamic_view.contains("reaches", (2, 3)).unwrap());
+    /// ```
     pub fn contains(
         &self,
         relation_symbol: RelationSymbol,
@@ -199,6 +318,28 @@ impl MaterializedDatalogView {
 
         Ok(false)
     }
+    /// Queries the consolidated view of a unary relation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// rdfType(?o) <- [RDF(?s, "rdf:type", ?o)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("RDF", ("rust", "rdf:type", "programmingLanguage".to_string()));
+    /// dynamic_view.poll();
+    /// let query_result: Vec<((String,))> = dynamic_view
+    ///     .query_unary::<String>("rdfType", (ANY_VALUE,))
+    ///     .unwrap()
+    ///     .map(|((x,))| (x.clone(),))
+    ///     .collect();
+    /// let expected_query_result = vec![("programmingLanguage".to_string(),)];
+    /// assert_eq!(expected_query_result, query_result)
+    /// ```
     pub fn query_unary<'a, T: 'static>(
         &self,
         relation_symbol: RelationSymbol,
@@ -222,6 +363,30 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term,)
             }))
     }
+    /// Queries the frontier view of a unary relation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// rdfType(?o) <- [RDF(?s, "rdf:type", ?o)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("RDF", ("rust", "rdf:type", "programmingLanguage".to_string()));
+    /// dynamic_view.poll();
+    /// dynamic_view.push_fact("RDF", ("emacs", "rdf:type", "operatingSystem".to_string()));
+    /// dynamic_view.poll();
+    /// let query_result: Vec<(isize, (String,))> = dynamic_view
+    ///     .query_frontier_unary::<String>("rdfType", (ANY_VALUE,))
+    ///     .unwrap()
+    ///     .map(|((x,), weight)| (weight, (x.clone(),)))
+    ///     .collect();
+    /// let expected_query_result = vec![(1, ("operatingSystem".to_string(),))];
+    /// assert_eq!(expected_query_result, query_result)
+    /// ```
     pub fn query_frontier_unary<'a, T: 'static>(
         &self,
         relation_symbol: RelationSymbol,
@@ -245,6 +410,34 @@ impl MaterializedDatalogView {
                 ((resolved_interned_constant_term,), *weight)
             }))
     }
+    /// Queries the consolidated view of a binary relation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashSet;
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// subClassOf(?s, ?o) <- [RDF(?s, "rdfs:subClassOf", ?o)],
+    /// subClassOf(?s, ?t) <- [subClassOf(?s, ?o), subClassOf(?o, ?t)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("RDF", ("animal".to_string(), "rdfs:subClassOf", "livingForm".to_string()));
+    /// dynamic_view.push_fact("RDF", ("bird".to_string(), "rdfs:subClassOf", "animal".to_string()));
+    /// dynamic_view.poll();
+    /// let query_result: HashSet<((String, String))> = dynamic_view
+    ///     .query_binary::<String, String>("subClassOf", (ANY_VALUE, ANY_VALUE))
+    ///     .unwrap()
+    ///     .map(|((x, y))| (x.clone(), y.clone()))
+    ///     .collect();
+    /// let expected_query_result: HashSet<_> = vec![
+    ///     ("animal".to_string(), "livingForm".to_string()),
+    ///     ("bird".to_string(), "animal".to_string()),
+    ///     ("bird".to_string(), "livingForm".to_string())].into_iter().collect();
+    /// assert_eq!(expected_query_result, query_result);
+    /// ```
     pub fn query_binary<'a, T: 'static, R: 'static>(
         &self,
         relation_symbol: RelationSymbol,
@@ -269,6 +462,35 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two)
             }))
     }
+    /// Queries the frontier of a binary relation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashSet;
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// subClassOf(?s, ?o) <- [RDF(?s, "rdfs:subClassOf", ?o)],
+    /// subClassOf(?s, ?t) <- [subClassOf(?s, ?o), subClassOf(?o, ?t)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("RDF", ("animal".to_string(), "rdfs:subClassOf", "livingForm".to_string()));
+    /// dynamic_view.push_fact("RDF", ("bird".to_string(), "rdfs:subClassOf", "animal".to_string()));
+    /// dynamic_view.poll();
+    /// dynamic_view.retract_fact("RDF", ("animal".to_string(), "rdfs:subClassOf", "livingForm".to_string()));
+    /// dynamic_view.poll();
+    /// let query_result: HashSet<((isize, (String, String)))> = dynamic_view
+    ///     .query_frontier_binary::<String, String>("subClassOf", (ANY_VALUE, ANY_VALUE))
+    ///     .unwrap()
+    ///     .map(|((x, y), weight)| (weight, (x.clone(), y.clone())))
+    ///     .collect();
+    /// let expected_query_result: HashSet<_> = vec![
+    ///     (-1, ("animal".to_string(), "livingForm".to_string())),
+    ///     (-1, ("bird".to_string(), "livingForm".to_string()))].into_iter().collect();
+    /// assert_eq!(expected_query_result, query_result);
+    /// ```
     pub fn query_frontier_binary<'a, T: 'static, R: 'static>(
         &self,
         relation_symbol: RelationSymbol,
@@ -293,6 +515,33 @@ impl MaterializedDatalogView {
                 ((resolved_interned_constant_term_one, resolved_interned_constant_term_two), *weight)
             }))
     }
+    /// Queries the consolidated view of a ternary relation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashSet;
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// triangle(?a, ?b, ?c) <- [edge(?a, ?b), edge(?b, ?c), edge(?c, ?a)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("edge", (1, 2));
+    /// dynamic_view.push_fact("edge", (2, 3));
+    /// dynamic_view.push_fact("edge", (3, 1));
+    /// dynamic_view.push_fact("edge", (4, 5));
+    /// dynamic_view.push_fact("edge", (5, 6));
+    /// dynamic_view.poll();
+    /// let query_result: HashSet<((i32, i32, i32))> = dynamic_view
+    ///     .query_ternary::<i32, i32, i32>("triangle", (ANY_VALUE, ANY_VALUE, ANY_VALUE))
+    ///     .unwrap()
+    ///     .map(|((a, b, c))| (*a, *b, *c))
+    ///     .collect();
+    /// let expected_query_result: HashSet<_> = vec![(1, 2, 3), (2, 3, 1), (3, 1, 2)].into_iter().collect();
+    /// assert_eq!(expected_query_result, query_result);
+    /// ```
     pub fn query_ternary<'a, T: 'static, R: 'static, S: 'static>(
         &self,
         relation_symbol: RelationSymbol,
@@ -318,6 +567,32 @@ impl MaterializedDatalogView {
                 (resolved_interned_constant_term_one, resolved_interned_constant_term_two, resolved_interned_constant_term_three)
             }))
     }
+    /// Queries the frontier of a ternary relation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::collections::HashSet;
+    /// use materialized_view::*;
+    ///
+    /// let query = program! {
+    /// triangle(?a, ?b, ?c) <- [edge(?a, ?b), edge(?b, ?c), edge(?c, ?a)],
+    /// };
+    /// let mut dynamic_view = MaterializedDatalogView::new(query);
+    ///
+    /// dynamic_view.push_fact("edge", (1, 2));
+    /// dynamic_view.push_fact("edge", (2, 3));
+    /// dynamic_view.push_fact("edge", (3, 1));
+    /// dynamic_view.push_fact("edge", (4, 5));
+    /// dynamic_view.push_fact("edge", (5, 6));
+    /// dynamic_view.poll();
+    /// let query_result: HashSet<((isize, (i32, i32, i32)))> = dynamic_view
+    ///     .query_frontier_ternary::<i32, i32, i32>("triangle", (ANY_VALUE, ANY_VALUE, ANY_VALUE))
+    ///     .unwrap()
+    ///     .map(|(((a, b, c), weight))| (weight, (*a, *b, *c)))
+    ///     .collect();
+    /// let expected_query_result: HashSet<_> = vec![(1, (1, 2, 3)), (1, (2, 3, 1)), (1, (3, 1, 2))].into_iter().collect();
+    /// assert_eq!(expected_query_result, query_result);
     pub fn query_frontier_ternary<'a, T: 'static, R: 'static, S: 'static>(
         &self,
         relation_symbol: RelationSymbol,
@@ -349,12 +624,14 @@ impl MaterializedDatalogView {
     fn consolidate(&mut self) {
         self.compute_layer.consolidate_into_storage_layer(&mut self.storage_layer)
     }
+    /// Triggers a incremental materialization update
     pub fn poll(&mut self) {
         self.storage_layer.move_frontier();
         self.step();
         self.consolidate();
         self.safe = true;
     }
+    /// Creates a new dynamic materialised view
     pub fn new(program: Vec<impl Into<Rule>>) -> Self {
         let storage_layer: StorageLayer = Default::default();
         let compute_layer = ComputeLayer::new();
@@ -367,11 +644,31 @@ impl MaterializedDatalogView {
 
         materialized_datalog_view
     }
+    /// Returns whether all incoming updates have been taken into account
     pub fn safe(&self) -> bool {
         self.safe
     }
+    /// Returns the number of consolidated updates
     pub fn len(&self) -> usize {
         self.storage_layer.len()
+    }
+}
+
+impl<'a, R> Extend<(&'a str, R)> for MaterializedDatalogView
+where R: Into<Fact> {
+    fn extend<T: IntoIterator<Item=(&'a str, R)>>(&mut self, iter: T) {
+        iter
+            .into_iter()
+            .for_each(|(relation_name, fact)| { self.push_fact(relation_name, fact); });
+    }
+}
+
+impl<R> Extend<R> for MaterializedDatalogView
+    where R: Into<Rule> {
+    fn extend<T: IntoIterator<Item=R>>(&mut self, iter: T) {
+        iter
+            .into_iter()
+            .for_each(|rule| { self.push_rule(rule); });
     }
 }
 
