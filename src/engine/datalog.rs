@@ -35,7 +35,7 @@ use crate::rewriting::atom::{decode_fact, encode_fact};
 /// type NodeIndex = i32;
 /// type Edge = (NodeIndex, NodeIndex);
 ///
-/// // The following recursive query is "equivalent" to this SQL statement:
+/// // The following recursive query is "equivalent" to this pseudo-SQL statement:
 /// // WITH RECURSIVE reaches(x, y) AS (
 /// //    SELECT x, y FROM edge
 /// //
@@ -685,12 +685,16 @@ mod tests {
     type NodeIndex = usize;
     type Edge = (NodeIndex, NodeIndex);
 
+    fn assemble_tc_program() -> Vec<Rule> {
+        program! {
+            tc(?x, ?y) <- [e(?x, ?y)],
+            tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)]
+        }
+    }
+
     #[test]
     fn integration_test_push_fact() {
-        let tc_program = program! {
-            tc(?x, ?y) <- [e(?x, ?y)],
-            tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
-        };
+        let tc_program = assemble_tc_program();
 
         let mut materialized_datalog_view = MaterializedDatalogView::new(tc_program);
         vec![
@@ -796,10 +800,7 @@ mod tests {
     }
     #[test]
     fn integration_test_retract_fact() {
-        let tc_program = program! {
-            tc(?x, ?y) <- [e(?x, ?y)],
-            tc(?x, ?z) <- [tc(?x, ?y), tc(?y, ?z)],
-        };
+        let tc_program = assemble_tc_program();
 
         let mut materialized_datalog_view = MaterializedDatalogView::new(tc_program);
         vec![
@@ -897,10 +898,7 @@ mod tests {
 
     #[test]
     fn integration_test_push_rule() {
-        let tc_program = program! {
-            tc(?x, ?y) <- [e(?x, ?y)],
-            tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
-        };
+        let tc_program = assemble_tc_program();
 
         let mut materialized_datalog_view = MaterializedDatalogView::new(tc_program);
         vec![
@@ -913,10 +911,10 @@ mod tests {
                 materialized_datalog_view.push_fact("e", edge);
             });
 
-        let actual_all_from_a_rule_dyn = rule::Rule::from((("tc1", (Const(1usize), Var("x"))), vec![("tc", (Const(1usize), Var("x")))]));
-        let actual_all_from_a_rule_compiled = rule::Rule::from(rule!{ tc1(1usize, ?x) <- [tc(1usize, ?x)] });
-        assert_eq!(actual_all_from_a_rule_dyn, actual_all_from_a_rule_compiled);
-        materialized_datalog_view.push_rule(actual_all_from_a_rule_dyn);
+        let actual_all_from_1_rule_dyn = rule::Rule::from((("tc1", (Const(1usize), Var("x"))), vec![("tc", (Const(1usize), Var("x")))]));
+        let actual_all_from_1_rule_compiled = rule::Rule::from(rule!{ tc1(1usize, ?x) <- [tc(1usize, ?x)] });
+        assert_eq!(actual_all_from_1_rule_dyn, actual_all_from_1_rule_compiled);
+        materialized_datalog_view.push_rule(actual_all_from_1_rule_dyn);
         assert!(!materialized_datalog_view.safe());
         materialized_datalog_view.poll();
         assert!(materialized_datalog_view.safe());
@@ -960,10 +958,7 @@ mod tests {
     }
     #[test]
     fn integration_test_retract_rule() {
-        let tc_program = program! {
-            tc(?x, ?y) <- [e(?x, ?y)],
-            tc(?x, ?z) <- [e(?x, ?y), tc(?y, ?z)],
-        };
+        let tc_program = assemble_tc_program();
 
         let mut materialized_datalog_view = MaterializedDatalogView::new(EMPTY_PROGRAM);
         vec![
@@ -1016,7 +1011,6 @@ mod tests {
     #[test]
     fn integration_test_triangle_query() {
         let tc_program = program! {
-            //tc(?a, ?b) <- [e(?a, ?b), e(?b, ?c)],
             t(?a, ?b, ?c) <- [e(?a, ?b), e(?b, ?c), e(?c, ?a)],
         };
 
@@ -1025,7 +1019,6 @@ mod tests {
             (1, 2),
             (2, 3),
             (3, 1),
-            //
             (4, 5),
             (5, 6)
         ]
