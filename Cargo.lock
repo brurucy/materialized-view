@@ -164,12 +164,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "boxcar"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "510a90332002c1af3317ef6b712f0dab697f30bbe809b86965eac2923c0bca8e"
-
-[[package]]
 name = "bumpalo"
 version = "3.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -437,6 +431,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "ftree"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "241f9dd9089e67c0b269989e9f884b12a61f68fc07ea8a4be6af8ee164e1abf7"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -645,6 +648,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "indexset"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18b2866c23046c1e1ff3ed0f45d5fa62c8fbd7e26f6af8b306d1058c3f48a4c3"
+dependencies = [
+ "ftree",
+]
+
+[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -701,15 +713,12 @@ name = "materialized-view"
 version = "0.1.0"
 dependencies = [
  "ahash 0.8.11",
- "boxcar",
- "dashmap",
  "datalog_syntax",
  "datalog_syntax_macros",
  "dbsp",
  "identity-hash",
  "indexmap 2.1.0",
- "once_cell",
- "sharded-slab",
+ "indexset",
 ]
 
 [[package]]

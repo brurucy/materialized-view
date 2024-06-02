@@ -1,5 +1,6 @@
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
+use std::time::Instant;
 use ahash::RandomState;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::builders::fact::Fact;
@@ -619,7 +620,9 @@ impl MaterializedDatalogView {
             }))
     }
     fn step(&mut self) {
+        let now = Instant::now();
         self.compute_layer.step();
+        println!("Step: {} ms", now.elapsed().as_millis());
     }
     fn consolidate(&mut self) {
         self.compute_layer.consolidate_into_storage_layer(&mut self.storage_layer)

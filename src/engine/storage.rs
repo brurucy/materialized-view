@@ -1,8 +1,8 @@
-use identity_hash::{BuildIdentityHasher};
-use indexmap::{IndexMap, IndexSet};
+use std::collections::BTreeSet;
+use indexmap::IndexMap;
 use crate::engine::compute::Weight;
 use crate::rewriting::atom::{EncodedFact};
-type ConsolidatedFactStorage = IndexSet<EncodedFact, BuildIdentityHasher<EncodedFact>>;
+type ConsolidatedFactStorage = BTreeSet<EncodedFact>;
 type Frontier = Vec<(EncodedFact, Weight)>;
 pub(crate) type RelationIdentifier = u64;
 #[derive(Default)]
@@ -21,7 +21,7 @@ impl StorageLayer {
             return if weight > 0 {
                 consolidated.insert(fact)
             } else {
-                consolidated.swap_remove(&fact)
+                consolidated.remove(&fact)
             }
         }
 
@@ -30,7 +30,7 @@ impl StorageLayer {
         if weight > 0 {
             fresh_fact_storages.1.insert(fact);
         } else {
-            fresh_fact_storages.1.swap_remove(&fact);
+            fresh_fact_storages.1.remove(&fact);
         }
 
         self.inner.insert(*relation_identifier, fresh_fact_storages);
@@ -45,7 +45,7 @@ impl StorageLayer {
         false
     }
     pub fn len(&self) -> usize {
-        self.inner.iter().map(|(_, fact_storage)| fact_storage.1.len()).sum()
+        self.inner.iter().map(|(_, fact_storage)| fact_storage.1.len() as usize).sum()
     }
     pub fn move_frontier(&mut self) {
         for (_, (frontier, _)) in self.inner.iter_mut() {

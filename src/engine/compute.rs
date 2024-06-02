@@ -2,25 +2,11 @@ use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash, Hasher};
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
-use once_cell::sync::Lazy;
-use sharded_slab::{Entry, Slab};
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
 use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
-
-static SLAB: Lazy<Slab<EncodedRewrite>> = Lazy::new(|| { Slab::new() });
-
-fn alloc_encoded_rewrite(encoded_rewrite: EncodedRewrite) -> usize {
-    SLAB.insert(encoded_rewrite).unwrap()
-}
-
-pub type EncodedRewriteReference = usize;
-
-fn get_encoded_rewrite<'a>(reference: EncodedRewriteReference) -> Entry<'a, EncodedRewrite> {
-    SLAB.get(reference).unwrap()
-}
 
 fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentifier, Vec<usize>)> {
     let mut out = std::vec![];
@@ -110,8 +96,9 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
 
                 (last_hash as LastHash, (0_u64 as NewHash, (head.0, encode_atom_terms(&head.1))))
             });
+            let empty_rewrite = EncodedRewrite::default();
             let empty_rewrites = rule_source
-                .index_with(|(_rule_id, _head, _body)| (0u64, EncodedRewrite::default()))
+                .index_with(move |(_rule_id, _head, _body)| (0u64, empty_rewrite))
                 .distinct();
 
             let fact_index = fact_source
@@ -153,7 +140,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
 
                         let fresh_facts = end_for_grounding
                             .join_index(&rewrite_product, |_last_hash, (_new_hash, (head_atom_symbol, head_atom)), final_substitution| {
-                                let fresh_encoded_fact = apply_rewrite(&final_substitution, head_atom);
+                                let fresh_encoded_fact = apply_rewrite(final_substitution, head_atom);
 
                                 Some((*head_atom_symbol, fresh_encoded_fact))
                             });
