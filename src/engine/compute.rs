@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
-use crate::interning::hash::new_random_state;
+use crate::interning::hash::{new_random_state, reproducible_hash_one};
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
 use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
@@ -126,7 +126,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                             |_key, rewrite, (new_hash, (current_body_atom_symbol, current_body_atom))| {
                                 let encoded_atom = apply_rewrite(rewrite, &current_body_atom);
 
-                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, *rewrite), ))
+                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, *rewrite)))
                             },
                         );
 
@@ -137,6 +137,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
 
                                 Some((*new_hash, extended_rewrite))
                             });
+
 
                         let fresh_facts = end_for_grounding
                             .join_index(&rewrite_product, |_last_hash, (_new_hash, (head_atom_symbol, head_atom)), final_substitution| {

@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
+use indexset::BTreeSet;
 use indexmap::IndexMap;
 use crate::engine::compute::Weight;
-use crate::rewriting::atom::{EncodedFact};
+use crate::rewriting::atom::EncodedFact;
 type ConsolidatedFactStorage = BTreeSet<EncodedFact>;
 type Frontier = Vec<(EncodedFact, Weight)>;
 pub(crate) type RelationIdentifier = u64;
