@@ -2,14 +2,28 @@ use std::collections::HashSet;
 use std::hash::{BuildHasher, Hash, Hasher};
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
+use once_cell::sync::Lazy;
+use sharded_slab::{Entry, Slab};
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
 use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
 
+static SLAB: Lazy<Slab<EncodedRewrite>> = Lazy::new(|| { Slab::new() });
+
+fn alloc_encoded_rewrite(encoded_rewrite: EncodedRewrite) -> usize {
+    SLAB.insert(encoded_rewrite).unwrap()
+}
+
+pub type EncodedRewriteReference = usize;
+
+fn get_encoded_rewrite<'a>(reference: EncodedRewriteReference) -> Entry<'a, EncodedRewrite> {
+    SLAB.get(reference).unwrap()
+}
+
 fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentifier, Vec<usize>)> {
-    let mut out = vec![];
+    let mut out = std::vec![];
     let mut variables: HashSet<usize> = Default::default();
     let mut fresh_variables: HashSet<usize> = Default::default();
     for body_atom in atoms {
@@ -30,7 +44,7 @@ fn compute_unique_column_sets(atoms: &Vec<InternedAtom>) -> Vec<(RelationIdentif
             })
             .collect();
         variables.extend(fresh_variables.iter());
-        out.push((body_atom.0, index));
+        out.push((body_atom.0 as u64, index));
 
         fresh_variables.clear();
     }
@@ -123,7 +137,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                         let previous_propagated_rewrites = rewrites.join_index(
                             &iteration,
                             |_key, rewrite, (new_hash, (current_body_atom_symbol, current_body_atom))| {
-                                let encoded_atom = apply_rewrite(&rewrite, &current_body_atom);
+                                let encoded_atom = apply_rewrite(rewrite, &current_body_atom);
 
                                 Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, *rewrite), ))
                             },

@@ -634,8 +634,8 @@ impl MaterializedDatalogView {
     /// Creates a new dynamic materialised view
     pub fn new(program: Vec<impl Into<Rule>>) -> Self {
         let storage_layer: StorageLayer = Default::default();
-        let compute_layer = ComputeLayer::new();
         let herbrand_universe = InternmentLayer::default();
+        let compute_layer = ComputeLayer::new();
         let mut materialized_datalog_view = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, rs: new_random_state(), safe: true };
 
         program.into_iter().for_each(|rule| {

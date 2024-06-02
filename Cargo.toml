@@ -10,3 +10,7 @@ indexmap = { version = "2.1.0" }
 dbsp = "0.2.0"
 ahash = "0.8.11"
 identity-hash="0.1.0"
+dashmap = "5.5.3"
+boxcar = "0.2.4"
+sharded-slab = "0.1.7"
+once_cell = "1.19.0"

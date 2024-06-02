@@ -10,11 +10,10 @@ const MAXIMUM_LEN: usize = 1 << 19;
 
 type ConstantInterner = IndexMap<u64, Box<dyn Any>>;
 type VariableInterner = IndexSet<u64>;
-
 #[derive(Default)]
 pub struct InternmentLayer {
     constant_interner: ConstantInterner,
-    variable_interner: VariableInterner
+    variable_interner: VariableInterner,
 }
 
 pub type InternedTerm = usize;
