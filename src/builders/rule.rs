@@ -1,8 +1,8 @@
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use datalog_syntax::TypedValue;
-use crate::interning::hash::new_random_state;
+use crate::interning::hash::{new_random_state, reproducible_hash_one};
 
 pub enum Term<T: Hash> {
     Var(String),
@@ -24,11 +24,9 @@ type TermIR = (bool, u64);
 
 impl<T> From<&Term<T>> for TermIR where T: Hash {
     fn from(value: &Term<T>) -> Self {
-        let rs = new_random_state();
-
         match value {
-            Term::Var(name) => (true, rs.hash_one(name)),
-            Term::Const(value) => (false, rs.hash_one(value))
+            Term::Var(name) => (true, reproducible_hash_one(name)),
+            Term::Const(value) => (false, reproducible_hash_one(value))
         }
     }
 }
@@ -66,7 +64,7 @@ impl<T: 'static> From<(&str, (Term<T>,))> for Atom where T: Hash {
         let first = TermIR::from(&value.1.0);
         let first_data = TermData::from(value.1.0);
 
-        return Self { atom_ir: [ first, (false, 0), (false, 0)], atom_data: [ first_data, None, None ], symbol: new_random_state().hash_one(value.0) }
+        return Self { atom_ir: [ first, (false, 0), (false, 0)], atom_data: [ first_data, None, None ], symbol: reproducible_hash_one(value.0) }
     }
 }
 
@@ -78,7 +76,7 @@ impl<T: 'static, R: 'static> From<(&str, (Term<T>, Term<R>))> for Atom where T: 
         let second = TermIR::from(&value.1.1);
         let second_data = TermData::from(value.1.1);
 
-        return Self { atom_ir: [first, second, (false, 0)], atom_data: [ first_data, second_data, None ], symbol: new_random_state().hash_one(value.0) }
+        return Self { atom_ir: [first, second, (false, 0)], atom_data: [ first_data, second_data, None ], symbol: reproducible_hash_one(value.0) }
     }
 }
 
@@ -93,7 +91,7 @@ impl<T: 'static, R: 'static, S: 'static> From<(&str, (Term<T>, Term<R>, Term<S>)
         let third = TermIR::from(&value.1.2);
         let third_data = TermData::from(value.1.2);
 
-        return Self { atom_ir: [first, second, third], atom_data: [ first_data, second_data, third_data ], symbol: new_random_state().hash_one(value.0) }
+        return Self { atom_ir: [first, second, third], atom_data: [ first_data, second_data, third_data ], symbol: reproducible_hash_one(value.0) }
     }
 }
 
@@ -107,7 +105,7 @@ impl<T, R> From<(T, Vec<R>)> for Rule where T: Into<Atom>, R: Into<Atom> {
         let head = value.0.into();
         let body: Vec<Atom> = value.1.into_iter().map(|body_atom| body_atom.into()).collect();
 
-        let mut rs = new_random_state().build_hasher();
+        let mut rs = new_random_state();
         head.atom_ir.hash(&mut rs);
 
         for body_atom in &body {
@@ -162,8 +160,6 @@ impl From<PositiveDatalogTerm> for TermData {
 
 impl From<datalog_syntax::Rule> for Rule {
     fn from(value: datalog_syntax::Rule) -> Self {
-        let rs = new_random_state();
-
         let head_symbol = value.head.symbol.as_str();
         let mut head_term_ir: AtomIR = [(false, 0); 3];
         let mut head_term_data: AtomData = Default::default();
@@ -182,7 +178,7 @@ impl From<datalog_syntax::Rule> for Rule {
         let head = Atom {
             atom_ir: head_term_ir,
             atom_data: head_term_data,
-            symbol: rs.hash_one(head_symbol),
+            symbol: reproducible_hash_one(head_symbol),
         };
 
         let body = value
@@ -206,7 +202,7 @@ impl From<datalog_syntax::Rule> for Rule {
                 Atom {
                     atom_ir: current_atom_term_ir,
                     atom_data: current_atom_term_data,
-                    symbol: rs.hash_one(current_atom_symbol),
+                    symbol: reproducible_hash_one(current_atom_symbol),
                 }
             })
             .collect();

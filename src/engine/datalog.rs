@@ -1,13 +1,12 @@
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::time::Instant;
-use ahash::RandomState;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::builders::fact::Fact;
 use crate::builders::goal::{Goal, pattern_match};
 use crate::builders::rule::Rule;
 use crate::engine::compute::{ComputeLayer, Weight};
-use crate::interning::hash::new_random_state;
+use crate::interning::hash::reproducible_hash_one;
 use crate::interning::herbrand_universe::InternmentLayer;
 use crate::rewriting::atom::{decode_fact, encode_fact};
 /// Database-agnostic just-in-time iterative dynamic incremental materialized views for the masses!
@@ -111,7 +110,6 @@ pub struct MaterializedDatalogView {
     compute_layer: ComputeLayer,
     internment_layer: InternmentLayer,
     storage_layer: StorageLayer,
-    rs: RandomState,
     safe: bool,
 }
 
@@ -156,7 +154,7 @@ impl MaterializedDatalogView {
     ///
     /// ```
     pub fn push_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         let interned_fact = self.internment_layer.intern_fact(fact.into());
 
         let encoded_fact = encode_fact(&interned_fact);
@@ -203,7 +201,7 @@ impl MaterializedDatalogView {
     /// assert_eq!(expected_update, actual_update_reaches);
     /// ```
     pub fn retract_fact(&mut self, relation_symbol: RelationSymbol, fact: impl Into<Fact>) -> bool {
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         if let Some(resolved_fact) = self.internment_layer.resolve_fact(fact.into()) {
             let encoded_resolved_fact = encode_fact(&resolved_fact);
 
@@ -312,7 +310,7 @@ impl MaterializedDatalogView {
             return Err(PollingError)
         }
 
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         if let Some(interned_fact) = self.internment_layer.resolve_fact(fact.into()) {
             return Ok(self.storage_layer.contains(&hashed_relation_symbol, &encode_fact(&interned_fact)))
         }
@@ -352,7 +350,7 @@ impl MaterializedDatalogView {
 
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         let fact_storage = &self.storage_layer.get_relations(&hashed_relation_symbol).1;
 
         Ok(fact_storage
@@ -399,7 +397,7 @@ impl MaterializedDatalogView {
 
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         let frontier = &self.storage_layer.get_relations(&hashed_relation_symbol).0;
 
         Ok(frontier
@@ -450,7 +448,7 @@ impl MaterializedDatalogView {
 
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         let fact_storage = &self.storage_layer.get_relations(&hashed_relation_symbol).1;
 
         Ok(fact_storage
@@ -503,7 +501,7 @@ impl MaterializedDatalogView {
 
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         let frontier = &self.storage_layer.get_relations(&hashed_relation_symbol).0;
 
         Ok(frontier
@@ -554,7 +552,7 @@ impl MaterializedDatalogView {
 
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         let fact_storage = &self.storage_layer.get_relations(&hashed_relation_symbol).1;
 
         Ok(fact_storage
@@ -605,7 +603,7 @@ impl MaterializedDatalogView {
 
         let goal = goal.into();
         let resolved_goal = self.internment_layer.resolve_goal(goal).unwrap();
-        let hashed_relation_symbol = self.rs.hash_one(&relation_symbol);
+        let hashed_relation_symbol = reproducible_hash_one(&relation_symbol);
         let frontier = &self.storage_layer.get_relations(&hashed_relation_symbol).0;
 
         Ok(frontier
@@ -639,7 +637,7 @@ impl MaterializedDatalogView {
         let storage_layer: StorageLayer = Default::default();
         let herbrand_universe = InternmentLayer::default();
         let compute_layer = ComputeLayer::new();
-        let mut materialized_datalog_view = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, rs: new_random_state(), safe: true };
+        let mut materialized_datalog_view = Self { compute_layer, internment_layer: herbrand_universe, storage_layer, safe: true };
 
         program.into_iter().for_each(|rule| {
             materialized_datalog_view.push_rule(rule);

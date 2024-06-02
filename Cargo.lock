@@ -35,7 +35,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e89da841a80418a9b391ebaea17f5c112ffaaa96f621d2c285b5174da76b9011"
 dependencies = [
  "cfg-if",
- "getrandom",
  "once_cell",
  "version_check",
  "zerocopy",
@@ -712,13 +711,14 @@ checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 name = "materialized-view"
 version = "0.1.0"
 dependencies = [
- "ahash 0.8.11",
+ "ahash 0.7.7",
  "datalog_syntax",
  "datalog_syntax_macros",
  "dbsp",
  "identity-hash",
  "indexmap 2.1.0",
  "indexset",
+ "once_cell",
 ]
 
 [[package]]

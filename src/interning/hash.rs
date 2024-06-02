@@ -1,10 +1,13 @@
-use ahash::RandomState;
+use std::hash::{BuildHasher, Hash};
+use ahash::{AHasher, RandomState};
+use once_cell::sync::Lazy;
 
-const K0: u64 = 42;
-const K1: u64 = 42;
-const K2: u64 = 42;
-const K3: u64 = 42;
+static GLOBAL_HASHER: Lazy<RandomState> = Lazy::new(|| Default::default());
 
-pub const fn new_random_state() -> RandomState {
-    RandomState::with_seeds(K0, K1, K2, K3)
+pub fn reproducible_hash_one(x: impl Hash) -> u64 {
+    GLOBAL_HASHER.hash_one(x)
+}
+
+pub fn new_random_state() -> AHasher {
+    GLOBAL_HASHER.build_hasher()
 }

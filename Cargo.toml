@@ -8,6 +8,7 @@ datalog_syntax = { path = "datalog_syntax" }
 datalog_syntax_macros = { path = "datalog_syntax_macros" }
 indexmap = { version = "2.1.0" }
 indexset = { version = "0.4.0"}
-dbsp = "0.2.0"
-ahash = "0.8.11"
+dbsp = { version = "0.2" }
 identity-hash="0.1.0"
+once_cell = "1.19.0"
+ahash = "0.7.7"

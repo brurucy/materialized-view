@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::hash::{BuildHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
@@ -72,7 +72,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 let mut last_hash =0;
 
                 for i in 0..body.len() {
-                    let mut rs = new_random_state().build_hasher();
+                    let mut rs = new_random_state();
                     last_hash.hash(&mut rs);
                     body[i].hash(&mut rs);
                     let this_hash = rs.finish();
@@ -87,7 +87,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
             let end_for_grounding = rules_by_id.index_with(|(head, body)| {
                 let mut last_hash =0;
                 for i in 0..body.len() {
-                    let mut rs = new_random_state().build_hasher();
+                    let mut rs = new_random_state();
                     last_hash.hash(&mut rs);
                     body[i].hash(&mut rs);
                     let this_hash = rs.finish();
@@ -205,7 +205,7 @@ impl ComputeLayer {
             .iter()
             .map(|((hashed_relation_symbol, encoded_fact), _, weight)| (hashed_relation_symbol, encoded_fact, weight))
             .for_each(|(hashed_relation_symbol, encoded_fact, weight)| {
-                storage_layer.update(&hashed_relation_symbol, encoded_fact, weight);
+                storage_layer.update(&hashed_relation_symbol, encoded_fact, weight as Weight);
             });
     }
 }

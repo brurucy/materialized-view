@@ -1,4 +1,5 @@
 use std::any::Any;
+use identity_hash::BuildIdentityHasher;
 use indexmap::{IndexMap, IndexSet};
 use crate::builders::fact::Fact;
 use crate::builders::goal::Goal;
@@ -6,10 +7,11 @@ use crate::builders::rule::{Atom, Rule};
 use crate::engine::storage::{RelationIdentifier};
 use crate::rewriting::atom::{encode_goal, EncodedGoal};
 
-const MAXIMUM_LEN: usize = 1 << 19;
+const CONSTANT_MAXIMUM_LEN: usize = (1 << 24) - 1;
+const VARIABLE_MAXIMUM_LEN: usize = (1 << 8) - 1;
 
-type ConstantInterner = IndexMap<u64, Box<dyn Any>>;
-type VariableInterner = IndexSet<u64>;
+type ConstantInterner = IndexMap<u64, Box<dyn Any>, BuildIdentityHasher<u64>>;
+type VariableInterner = IndexSet<u64, BuildIdentityHasher<u64>>;
 #[derive(Default)]
 pub struct InternmentLayer {
     constant_interner: ConstantInterner,
@@ -32,15 +34,15 @@ impl InternmentLayer {
         None
     }
     pub fn push_constant(&mut self, hash: u64, data: Box<dyn Any>) -> usize {
-        if self.constant_interner.len() == MAXIMUM_LEN - 1 {
-            panic!("There can not be more than {} unique constant values", MAXIMUM_LEN - 1)
+        if self.constant_interner.len() == CONSTANT_MAXIMUM_LEN {
+            panic!("There can not be more than {} unique constant values", CONSTANT_MAXIMUM_LEN)
         }
 
         self.constant_interner.insert_full(hash, data).0 + 1
     }
     pub fn push_variable(&mut self, hash: u64) -> usize {
-        if self.constant_interner.len() == MAXIMUM_LEN - 1 {
-            panic!("There can not be more than {} unique constant values", MAXIMUM_LEN - 1)
+        if self.constant_interner.len() == VARIABLE_MAXIMUM_LEN {
+            panic!("There can not be more than {} unique constant values", VARIABLE_MAXIMUM_LEN)
         }
 
         self.variable_interner.insert_full(hash).0 + 1
