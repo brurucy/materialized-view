@@ -1,124 +1,102 @@
+use byteorder::ByteOrder;
 use crate::interning::herbrand_universe::{InternedConstantTerms, InternedTerms};
 
-pub type EncodedAtom = u64;
-pub type EncodedFact = u64;
-pub type ProjectedEncodedFact = u64;
-pub type ProjectedEncodedAtom = u64;
-pub type EncodedGoal = u64;
-pub const TERM_COUNT_BITS: u64 = 2;
-pub const TERM_COUNT_MASK: u64 = 3;
-pub const TERM_BITS: u64 = 20;
-pub const TERM_VALUE_BITS: u64 = 19;
-pub const TERM_VALUE_MASK: u64 = (1 << TERM_VALUE_BITS) - 1;
-pub const TERM_BITS_MASK: u64 = (1 << TERM_BITS) - 1;
+pub const TERM_BYTE_SIZE: usize = 24 / 8;
+pub const ATOM_BYTE_SIZE: usize = TERM_BYTE_SIZE * 3;
+pub type EncodedAtom = [u8; ATOM_BYTE_SIZE];
+pub type EncodedFact = [u8; ATOM_BYTE_SIZE];
+pub type ProjectedEncodedFact = [u8; ATOM_BYTE_SIZE];
+pub type ProjectedEncodedAtom = [u8; ATOM_BYTE_SIZE];
+pub type EncodedGoal = EncodedFact;
 pub fn encode_fact(fact: &InternedConstantTerms) -> EncodedFact {
-    let len = match fact {
-        &[0, _b, _c] => 0,
-        &[_a, 0, _c] => 1,
-        &[_a, _b, 0] => 2,
-        &[_a, _b, _c] => 3,
-    };
-    let mut encoded_fact = len;
+    let mut encoded_fact: EncodedFact = Default::default();
 
     for (idx, term_value) in fact.iter().enumerate() {
-        let term_bits = ((*term_value as u64) & TERM_VALUE_MASK) << 1;
-        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * (idx as u64));
+        let term_start = idx * 3;
+        let mut term_bits = [0u8; 3];
+        let proper_term_value = (*term_value as u32) << 1;
+        byteorder::NativeEndian::write_u24(&mut term_bits, proper_term_value);
 
-        encoded_fact |= term_bits << shift_amount;
+        encoded_fact[term_start + 0] = term_bits[0];
+        encoded_fact[term_start + 1] = term_bits[1];
+        encoded_fact[term_start + 2] = term_bits[2];
     }
 
     encoded_fact
 }
 pub fn encode_atom_terms(atom: &InternedTerms) -> EncodedAtom {
-    let mut encoded_atom = 0;
-    let len = match atom {
-        [(_, 0), (_, _b), (_, _c)] => 0,
-        [(_, _a), (_, 0), (_,_c)] => 1,
-        [(_, _a), (_, _b), (_, 0)] => 2,
-        [(_, _a), (_, _b), (_, _c)] => 3,
-    };
-    encoded_atom |= len;
+    let mut encoded_atom: EncodedAtom = Default::default();
 
     for (idx, (is_var, term)) in atom.iter().enumerate() {
-        let term_value = *term as u64;
-        let mut term_bits = (term_value & TERM_VALUE_MASK) << 1;
+        let term_start = idx * 3;
+        let mut term_bits = [0u8; 3];
+        let mut proper_term_value = (*term as u32) << 1;
         if *is_var {
-            term_bits |= 1;
+            proper_term_value |= 1;
         }
-        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * (idx as u64));
+        byteorder::NativeEndian::write_u24(&mut term_bits, proper_term_value);
 
-        encoded_atom |= term_bits << shift_amount;
+        encoded_atom[term_start + 0] = term_bits[0];
+        encoded_atom[term_start + 1] = term_bits[1];
+        encoded_atom[term_start + 2] = term_bits[2];
     }
 
     encoded_atom
 }
 
 pub fn encode_goal(goal: &InternedConstantTerms) -> EncodedGoal {
-    let mut encoded_goal = 0;
+    let mut encoded_goal: EncodedGoal = Default::default();
 
     for (idx, term_value) in goal.iter().enumerate() {
-        let term_bits = ((*term_value as u64) & TERM_VALUE_MASK) << 1;
-        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * (idx as u64));
+        if *term_value != 0 {
+            let term_start = idx * 3;
+            let mut term_bits = [0u8; 3];
+            let proper_term_value = *term_value as u32;
+            byteorder::NativeEndian::write_u24(&mut term_bits, proper_term_value);
 
-        encoded_goal |= term_bits << shift_amount;
+            encoded_goal[term_start + 0] = term_bits[0];
+            encoded_goal[term_start + 1] = term_bits[1];
+            encoded_goal[term_start + 2] = term_bits[2];
+        }
     }
 
     encoded_goal
 }
 
 pub fn project_encoded_fact(fact: &EncodedFact, column_set: &Vec<usize>) -> ProjectedEncodedFact {
-    let len = TERM_COUNT_MASK & fact;
-    let mut projection_mask = 0;
-    for idx in 0..(len as usize) {
+    let mut projected_fact = *fact;
+    for idx in 0..TERM_BYTE_SIZE {
         if !column_set.contains(&idx) {
-            let shift_amount = TERM_COUNT_BITS + (TERM_BITS * idx as u64);
-
-            let range_start = (1 << (shift_amount)) - 1;
-            let range_end = (1 << (shift_amount + TERM_BITS)) - 1;
-
-            let term_mask = range_start ^ range_end;
-
-            projection_mask |= fact & term_mask;
-        }
+            let term_start = idx * 3;
+            projected_fact[term_start] = 0;
+            projected_fact[term_start + 1] = 0;
+            projected_fact[term_start + 2] = 0;
+        };
     }
 
-    fact ^ projection_mask
+    projected_fact
 }
 pub fn project_encoded_atom(atom: &EncodedAtom) -> ProjectedEncodedAtom {
-    let len = TERM_COUNT_MASK & atom;
-    let mut projection_mask = 0;
-    for idx in 0..(len as usize) {
-        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * idx as u64);
-        let ith_bit = 1 << shift_amount;
-
-        if (atom & ith_bit) != ith_bit {
-            continue;
+    let mut projected_atom = *atom;
+    for idx in 0..TERM_BYTE_SIZE {
+        let term_start = idx * 3;
+        if projected_atom[term_start] & 1 == 1 {
+            projected_atom[term_start] = 0;
+            projected_atom[term_start + 1] = 0;
+            projected_atom[term_start + 2] = 0;
         }
-
-        let range_start = ith_bit - 1;
-        let range_end = (1 << (shift_amount + TERM_BITS)) - 1;
-
-        let term_mask = range_start ^ range_end;
-
-        projection_mask |= atom & term_mask;
     }
 
-    atom ^ projection_mask
+    projected_atom
 }
 pub fn decode_fact(fact: EncodedAtom) -> InternedConstantTerms {
-    let len = (TERM_COUNT_MASK & fact) as usize;
     let mut decoded_fact = [0; 3];
-    for idx in 0..len {
-        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * idx as u64);
+    for idx in 0..TERM_BYTE_SIZE {
+        let term_start = idx * 3;
+        let term_bytes = &fact[term_start..(term_start + (TERM_BYTE_SIZE))];
+        let term = (byteorder::NativeEndian::read_u24(term_bytes)) >> 1;
 
-        let range_start = (1 << (shift_amount)) - 1;
-        let range_end = (1 << (shift_amount + TERM_BITS)) - 1;
-
-        let term_mask = range_start ^ range_end;
-        let term = fact & term_mask;
-        let shifted_term = term >> shift_amount >> 1;
-
-        decoded_fact[idx] = shifted_term as usize;
+        decoded_fact[idx] = term as usize;
     }
 
     decoded_fact
@@ -131,26 +109,24 @@ mod tests {
     #[test]
     fn test_encode_fact() {
         let fact = [1usize, 2usize, 3usize];
-        let expected_encoded_length = 3u64;
-        let expected_encoded_first_term = 1u64 << 3;
-        let expected_encoded_second_term = 2u64 << 23;
-        let expected_encoded_third_term = 3u64 << 43;
-        let expected_encoded_fact = expected_encoded_length | expected_encoded_first_term | expected_encoded_second_term | expected_encoded_third_term;
+        let expected_encoded_first_term = 1u8 << 1;
+        let expected_encoded_second_term = 2u8 << 1;
+        let expected_encoded_third_term = 3u8 << 1;
+        let expected_encoded_fact = [expected_encoded_first_term, 0, 0, expected_encoded_second_term, 0, 0, expected_encoded_third_term, 0, 0];
 
         assert_eq!(expected_encoded_fact, encode_fact(&fact));
-
         let fact_as_atom = [(false, fact[0]), (false, fact[1]), (false, fact[2])];
+
         assert_eq!(expected_encoded_fact, encode_atom_terms(&fact_as_atom));
     }
 
     #[test]
     fn test_encode_atom() {
         let atom = [(false, 1usize), (true, 2usize), (true, 3usize)];
-        let expected_encoded_length = 3u64;
-        let expected_encoded_first_term = 1u64 << 3;
-        let expected_encoded_second_term = (2u64 << 23) | (1 << 22);
-        let expected_encoded_third_term = (3u64 << 43) | (1 << 42);
-        let expected_encoded_atom = expected_encoded_length | expected_encoded_first_term | expected_encoded_second_term | expected_encoded_third_term;
+        let expected_encoded_first_term = 1u8 << 1;
+        let expected_encoded_second_term = (2u8 << 1) | 1;
+        let expected_encoded_third_term = (3u8 << 1) | 1;
+        let expected_encoded_atom = [expected_encoded_first_term, 0, 0, expected_encoded_second_term, 0, 0, expected_encoded_third_term, 0, 0];
 
         assert_eq!(expected_encoded_atom, encode_atom_terms(&atom));
     }
@@ -161,9 +137,13 @@ mod tests {
         let expected_fact_1 = [1usize, 2usize, 0];
         let expected_fact_2 = [1usize, 0, 0];
 
-        assert_eq!(expected_fact_0, decode_fact(encode_fact(&expected_fact_0)));
-        assert_eq!(expected_fact_1, decode_fact(encode_fact(&expected_fact_1)));
-        assert_eq!(expected_fact_2, decode_fact(encode_fact(&expected_fact_2)));
+        let fact_0 = decode_fact(encode_fact(&expected_fact_0));
+        let fact_1 = decode_fact(encode_fact(&expected_fact_1));
+        let fact_2 = decode_fact(encode_fact(&expected_fact_2));
+
+        assert_eq!(expected_fact_0, fact_0);
+        assert_eq!(expected_fact_1, fact_1);
+        assert_eq!(expected_fact_2, fact_2);
     }
 
     #[test]

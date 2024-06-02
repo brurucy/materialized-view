@@ -7,8 +7,8 @@ use crate::builders::rule::{Atom, Rule};
 use crate::engine::storage::{RelationIdentifier};
 use crate::rewriting::atom::{encode_goal, EncodedGoal};
 
-const CONSTANT_MAXIMUM_LEN: usize = (1 << 24) - 1;
-const VARIABLE_MAXIMUM_LEN: usize = (1 << 8) - 1;
+const CONSTANT_MAXIMUM_LEN: usize = (1 << 23) - 1;
+const VARIABLE_MAXIMUM_LEN: usize = (1 << 7) - 1;
 
 type ConstantInterner = IndexMap<u64, Box<dyn Any>, BuildIdentityHasher<u64>>;
 type VariableInterner = IndexSet<u64, BuildIdentityHasher<u64>>;

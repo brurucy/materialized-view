@@ -1,6 +1,8 @@
 use std::hash::Hash;
+use byteorder::ByteOrder;
 use crate::interning::hash::reproducible_hash_one;
-use crate::rewriting::atom::{EncodedFact, EncodedGoal, TERM_COUNT_BITS};
+use crate::rewriting::atom::{EncodedFact, EncodedGoal};
+use crate::rewriting::rewrite::get_ith_term;
 
 #[allow(dead_code)]
 pub const ANY_VALUE: Option<()> = None;
@@ -36,25 +38,21 @@ impl<T, R, S> From<(Option<T>, Option<R>, Option<S>)> for Goal where T: Hash, R:
     }
 }
 
-const TERM_LEN_MASK: u64 = (1 << TERM_COUNT_BITS) - 1;
-const FIRST_CONSTANT_MASK: u64 = TERM_LEN_MASK ^ ((1 << 22) - 1);
-const SECOND_CONSTANT_MASK: u64 = ((1 << 22) - 1) ^ ((1 << 42) - 1);
-const THIRD_CONSTANT_MASK: u64 = ((1 << 42) - 1) ^ ((1 << 62) - 1);
 pub(crate) fn pattern_match(goal: &EncodedGoal, fact: &EncodedFact) -> bool {
-    let first_goal_constant = goal & FIRST_CONSTANT_MASK;
-    let first_fact_constant = fact & FIRST_CONSTANT_MASK;
+    let first_goal_constant = byteorder::NativeEndian::read_u24(get_ith_term(goal, 0).1);
+    let first_fact_constant = byteorder::NativeEndian::read_u24(get_ith_term(fact, 0).1) >> 1;
     if first_goal_constant != 0 && first_goal_constant != first_fact_constant {
         return false
     }
 
-    let second_goal_constant = goal & SECOND_CONSTANT_MASK;
-    let second_fact_constant = fact & SECOND_CONSTANT_MASK;
+    let second_goal_constant = byteorder::NativeEndian::read_u24(get_ith_term(goal, 1).1);
+    let second_fact_constant = byteorder::NativeEndian::read_u24(get_ith_term(fact, 1).1) >> 1;
     if second_goal_constant != 0 && second_goal_constant != second_fact_constant {
         return false
     }
 
-    let third_goal_constant = goal & THIRD_CONSTANT_MASK;
-    let third_fact_constant = fact & THIRD_CONSTANT_MASK;
+    let third_goal_constant = byteorder::NativeEndian::read_u24(get_ith_term(goal, 2).1);
+    let third_fact_constant = byteorder::NativeEndian::read_u24(get_ith_term(fact, 2).1) >> 1;
     if third_goal_constant != 0 && third_goal_constant != third_fact_constant {
         return false
     }
@@ -75,7 +73,7 @@ mod tests {
 
         let fact_one = encode_fact(&[1usize, 4, 0]);
         let fact_two = encode_fact(&[3usize, 4, 0]);
-        let fact_three = encode_goal(&[467000usize, 510000, 511000]);
+        let fact_three = encode_fact(&[467000usize, 510000, 511000]);
 
         assert!(pattern_match(&goal_one, &fact_one));
         assert!(!pattern_match(&goal_one, &fact_two));

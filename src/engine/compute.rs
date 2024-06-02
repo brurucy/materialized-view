@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
-use crate::interning::hash::{new_random_state, reproducible_hash_one};
+use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
 use crate::rewriting::atom::{encode_atom_terms, EncodedAtom, project_encoded_atom, project_encoded_fact};
 use crate::rewriting::rewrite::{apply_rewrite, EncodedRewrite, merge_right_rewrite_into_left, unify_encoded_atom_with_encoded_rewrite};
@@ -173,9 +173,9 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
 
 pub struct ComputeLayer {
     dbsp_runtime: DBSPHandle,
-    fact_sink: CollectionHandle<ProjectedEncodedFact, (EncodedAtom, Weight)>,
-    rule_sink: CollectionHandle<InternedRule, Weight>,
-    fact_source: OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
+    fact_sink: FactSink,
+    rule_sink: RuleSink,
+    fact_source: FactSource,
 }
 
 impl ComputeLayer {

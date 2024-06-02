@@ -1,21 +1,20 @@
 use byteorder::ByteOrder;
 use crate::interning::herbrand_universe::InternedTerm;
-use crate::rewriting::atom::{EncodedAtom, TERM_COUNT_BITS, TERM_COUNT_MASK, TERM_BITS_MASK, TERM_BITS, TERM_VALUE_MASK};
+use crate::rewriting::atom::{EncodedAtom, EncodedFact, TERM_BYTE_SIZE};
 
 pub type EncodedRewrite = [u8; 32];
-const CONSTANT_TERM_BYTE_SIZE: u8 = 24 / 8;
-const VARIABLE_PLUS_CONSTANT_BYTE_SIZE: u8 = CONSTANT_TERM_BYTE_SIZE + 1;
+const VARIABLE_PLUS_CONSTANT_BYTE_SIZE: usize = TERM_BYTE_SIZE + 1;
 #[inline]
 fn get_encoded_rewrite_len(encoded_rewrite: &EncodedRewrite) -> u8 {
     encoded_rewrite.get(0).copied().unwrap_or_default()
 }
 #[inline]
-fn get_ith_substitution(encoded_rewrite: &EncodedRewrite, i: u8) -> (u8, [u8; CONSTANT_TERM_BYTE_SIZE as usize]) {
-    let ith_variable_position = ((i * VARIABLE_PLUS_CONSTANT_BYTE_SIZE) + 1) as usize;
+fn get_ith_substitution(encoded_rewrite: &EncodedRewrite, i: u8) -> (u8, [u8; TERM_BYTE_SIZE]) {
+    let ith_variable_position = ((i * (VARIABLE_PLUS_CONSTANT_BYTE_SIZE as u8)) + 1) as usize;
     let ith_constant_position_start = ith_variable_position + 1;
 
     let ith_variable = encoded_rewrite[ith_variable_position];
-    let ith_constant: [u8; CONSTANT_TERM_BYTE_SIZE as usize] = [
+    let ith_constant: [u8; TERM_BYTE_SIZE] = [
         encoded_rewrite[ith_constant_position_start],
         encoded_rewrite[ith_constant_position_start+1],
         encoded_rewrite[ith_constant_position_start+2],
@@ -38,32 +37,27 @@ pub fn get_from_encoded_rewrite(rewrite: &EncodedRewrite, variable: u8) -> Optio
 }
 
 #[inline]
-fn get_ith_term(encoded_atom: &EncodedAtom, i: u64) -> (bool, u64) {
-    let ith_term = (encoded_atom >> TERM_COUNT_BITS) >> (TERM_BITS * i);
-    let is_var = (ith_term & 1) == 1;
-    let interned_term = (ith_term >> 1) & TERM_VALUE_MASK;
+pub fn get_ith_term(encoded_atom: &EncodedAtom, i: u64) -> (bool, &[u8]) {
+    let term_start = (i * 3) as usize;
+    let is_var = (encoded_atom[term_start] & 1) == 1;
 
-    (is_var, interned_term)
+    (is_var, &encoded_atom[term_start..(term_start + 3)])
 }
 
 pub fn apply_rewrite(rewrite: &EncodedRewrite, encoded_atom: &EncodedAtom) -> EncodedAtom {
     let mut encoded_atom_copy = *encoded_atom;
-    let term_count = encoded_atom & TERM_COUNT_MASK;
     let current_sub_count = get_encoded_rewrite_len(rewrite);
 
-    (0..term_count).for_each(|ith_term| {
-        let current_term = get_ith_term(encoded_atom, ith_term);
-        if current_term.0 {
+    (0..3).for_each(|ith_term| {
+        let (is_var, current_term) = get_ith_term(encoded_atom, ith_term);
+        if is_var {
             for ith in 0..current_sub_count {
                 let (variable, constant) = get_ith_substitution(rewrite, ith);
-                if variable == (current_term.1 as u8) {
-                    let shift_amount = TERM_COUNT_BITS + (TERM_BITS * ith_term);
-                    let wipe_range_start = (1 << (shift_amount)) - 1;
-                    let wipe_range_end = (1 << (shift_amount + TERM_BITS)) - 1;
-                    let wipe_mask = wipe_range_start ^ wipe_range_end;
-                    encoded_atom_copy &= !wipe_mask;
-                    encoded_atom_copy |= ((byteorder::NativeEndian::read_u24(&constant) as u64) << 1) << shift_amount;
-                    break;
+                if variable == (current_term[0] >> 1) {
+                    let term_start = (ith_term * 3) as usize;
+                    encoded_atom_copy[term_start] = constant[0] << 1;
+                    encoded_atom_copy[term_start + 1] = constant[1];
+                    encoded_atom_copy[term_start + 2] = constant[2];
                 };
             }
         };
@@ -83,7 +77,7 @@ pub fn add_substitution(rewrite: &mut EncodedRewrite, substitution: Substitution
     // 2 - 9, 10, 11, 12
     // 3 - 13, 14, 15, 16
     // 4 - 17, 18, 19, 20
-    let ith_variable_position = ((len * VARIABLE_PLUS_CONSTANT_BYTE_SIZE) + 1) as usize;
+    let ith_variable_position = ((len * (VARIABLE_PLUS_CONSTANT_BYTE_SIZE as u8)) + 1) as usize;
     let ith_constant_position_start = ith_variable_position + 1;
     rewrite[ith_variable_position] = substitution.0 as u8;
 
@@ -94,31 +88,36 @@ pub fn add_substitution(rewrite: &mut EncodedRewrite, substitution: Substitution
     rewrite[0] += 1;
 }
 
-pub fn unify_encoded_atom_with_encoded_rewrite(left_atom: EncodedAtom, right_fact: EncodedAtom) -> Option<EncodedRewrite> {
-    let left_len = TERM_COUNT_MASK & left_atom;
-    let right_len = TERM_COUNT_MASK & right_fact;
+fn get_atom_len(atom: EncodedAtom) -> usize {
+    let is_first_term_not_empty = if (atom[0].count_ones() + atom[1].count_ones() + atom[2].count_ones()) > 0 { 1 } else { 0 };
+    let is_second_term_not_empty = if (atom[3].count_ones() + atom[4].count_ones() + atom[5].count_ones()) > 0 { 1 } else { 0 };
+    let is_third_term_not_empty = if (atom[6].count_ones() + atom[7].count_ones() + atom[8].count_ones()) > 0 { 1 } else { 0 };
+
+    is_first_term_not_empty + is_second_term_not_empty + is_third_term_not_empty
+}
+
+pub fn unify_encoded_atom_with_encoded_rewrite(left_atom: EncodedAtom, right_fact: EncodedFact) -> Option<EncodedRewrite> {
+    let left_len = get_atom_len(left_atom);
+    let right_len = get_atom_len(right_fact);
     if left_len != right_len {
         return None;
     }
     let mut rewrite = Default::default();
-    for idx in 0..(left_len as usize) {
-        let shift_amount = TERM_COUNT_BITS + (TERM_BITS * (idx as u64));
-        let left_term = (left_atom >> shift_amount) & TERM_BITS_MASK;
-        let right_constant = (right_fact >> shift_amount) & TERM_BITS_MASK;
+    for idx in 0..left_len {
+        let (is_left_term_var, left_term) = get_ith_term(&left_atom, idx as u64);
+        let (_, right_term) = get_ith_term(&right_fact, idx as u64);
 
-        let is_left_term_var = left_term & 1 == 1;
         if is_left_term_var {
-            let left_variable_name = left_term >> 1;
-            let right_constant_value = (right_constant >> 1) as u32;
-            let mut right_constant = [0; 3];
-            byteorder::NativeEndian::write_u24(&mut right_constant, right_constant_value);
+            let left_variable_name = left_term[0] >> 1;
+            let mut right_constant = ConstantTerm::try_from(right_term).unwrap();
+            right_constant[0] >>= 1;
 
-            add_substitution(&mut rewrite, (left_variable_name as u8, right_constant));
+            add_substitution(&mut rewrite, (left_variable_name, right_constant));
 
             continue;
         }
 
-        if left_term != right_constant {
+        if left_term != right_term {
             return None;
         }
     }
