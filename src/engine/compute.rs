@@ -97,7 +97,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                 (last_hash as LastHash, (0_u64 as NewHash, (head.0, encode_atom_terms(&head.1))))
             });
             let empty_rewrite = EncodedRewrite::default();
-            let empty_rewrites = rule_source
+            let empty_rewrites =  rule_source
                 .index_with(move |(_rule_id, _head, _body)| (0u64, empty_rewrite))
                 .distinct();
 
