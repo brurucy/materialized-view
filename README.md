@@ -4,7 +4,7 @@
 [![docs](https://docs.rs/materialized-view/badge.svg)](https://docs.rs/materialized-view)
 
 `materialized-view` is a database-agnostic incremental computation engine whose **focus** is in graph data models, such 
-as RDF and Property graphs. As it is an incremental system, the latency incurred to update a query is proportional
+as RDF and Property graphs. As it is an incremental system, the latency incurred to update a query view is proportional
 to the size of the update.
 
 There are two other projects that are similar in intent, albeit far more general as they support SQL, and are partially
@@ -17,6 +17,7 @@ The major differences from `materialized-view` to them are:
 2. The query language is **Datalog** instead of SQL
 3. Creating a query does not require compilation 
 4. Queries can be changed on the fly - this includes adding new queries that query queries
+5. `materialized-view` is a higher-order interpreter of a variant of incremental lambda calculus
 
 #### Is it a database?
 
@@ -24,6 +25,12 @@ No. It does however offer **two** always-updated views of the underlying queries
 1. Consolidated - The always-up-to-date state of the materialisation.
 2. Frontier - The most recent updates. You can query the frontier each time after a `poll` event happens
 to retrieve the latest updates to the materialisation, and then store it in whichever database you are using.
+
+#### What are its limitations?
+
+`materialized-view`'s Datalog is significantly constrained in terms of expressivity. It is equivalent to SQL, without
+aggregates and negation, but with a powerful declarative recursion construct that allows you to do more (and far more efficiently) than
+`WITH RECURSIVE`. You will see it in the example.
 
 #### Example
 

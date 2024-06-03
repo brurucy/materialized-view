@@ -74,7 +74,7 @@ impl Parse for RuleMacroInput {
             }
         }
 
-        if variables.len() > 5 {
+        if variables.len() >= 8 {
             return Err(syn::Error::new(
                 input.span(),
                 "This rule has more variables than are allowed"

@@ -72,11 +72,6 @@ pub type Substitution = (VariableTerm, ConstantTerm);
 
 pub fn add_substitution(rewrite: &mut EncodedRewrite, substitution: Substitution) {
     let len = rewrite[0];
-    // 0 - 1, 2, 3, 4
-    // 1 - 5, 6, 7, 8
-    // 2 - 9, 10, 11, 12
-    // 3 - 13, 14, 15, 16
-    // 4 - 17, 18, 19, 20
     let ith_variable_position = ((len * (VARIABLE_PLUS_CONSTANT_BYTE_SIZE as u8)) + 1) as usize;
     let ith_constant_position_start = ith_variable_position + 1;
     rewrite[ith_variable_position] = substitution.0 as u8;
