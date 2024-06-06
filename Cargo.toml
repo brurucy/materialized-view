@@ -2,6 +2,13 @@
 name = "materialized-view"
 version = "0.1.0"
 edition = "2021"
+documentation = "https://docs.rs/materialized-view/"
+repository = "https://github.com/brurucy/materialized-view"
+license = "Apache-2.0"
+description = "Simple incremental materialized views for the masses."
+keywords = ["rdf", "property-graph", "datalog", "dbsp", "differential"]
+categories = ["algorithms", "database-implementations"]
+readme = "README.md"
 
 [dependencies]
 datalog_syntax = { path = "datalog_syntax" }

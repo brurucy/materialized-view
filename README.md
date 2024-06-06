@@ -19,6 +19,19 @@ The major differences from `materialized-view` to them are:
 4. Queries can be changed on the fly - this includes adding new queries that query queries
 5. `materialized-view` is a higher-order interpreter of a variant of incremental lambda calculus
 
+#### Citing `materialized-view`
+
+```markdown
+@misc{materialized-view-github,
+author = {Bruno Rucy Carneiro Alves de Lima and
+Merlin Kramer},
+title = {{`materialized-view` System Source Code}},
+howpublished = {\url{https://github.com/brurucy/materialized-view}},
+month        = June,
+year         = 2024
+}
+```
+
 #### Is it a database?
 
 No. It does however offer **two** always-updated views of the underlying queries:
@@ -31,6 +44,9 @@ to retrieve the latest updates to the materialisation, and then store it in whic
 `materialized-view`'s Datalog is significantly constrained in terms of expressivity. It is equivalent to SQL, without
 aggregates and negation, but with a powerful declarative recursion construct that allows you to do more (and far more efficiently) than
 `WITH RECURSIVE`. You will see it in the example.
+
+Think of this library as, at the very least, a reliable way to maintain the most expensive elementary parts of some data-intensive
+workload.
 
 #### Example
 
