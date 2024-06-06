@@ -11,8 +11,8 @@ categories = ["algorithms", "database-implementations"]
 readme = "README.md"
 
 [dependencies]
-datalog_syntax = { path = "datalog_syntax" }
-datalog_syntax_macros = { path = "datalog_syntax_macros" }
+datalog_syntax = { path = "datalog_syntax", version = "0.1.0" }
+datalog_syntax_macros = { path = "datalog_syntax_macros", version = "0.1.0" }
 indexmap = { version = "2.1.0" }
 indexset = { version = "0.4.0"}
 dbsp = { version = "0.2" }
