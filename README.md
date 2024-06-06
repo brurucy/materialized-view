@@ -23,8 +23,7 @@ The major differences from `materialized-view` to them are:
 
 ```markdown
 @misc{materialized-view-github,
-author = {Bruno Rucy Carneiro Alves de Lima and
-Merlin Kramer},
+author = {},
 title = {{`materialized-view` System Source Code}},
 howpublished = {\url{https://github.com/brurucy/materialized-view}},
 month        = June,
