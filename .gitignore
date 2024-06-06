@@ -1,0 +1,8 @@
+devspace.yaml
+.devspace/
+devspace-functional-tests.yaml
+devspace-mdc-secondary.yaml
+devspace-mdc-management.yaml
+data
+.idea
+.DS_Store
