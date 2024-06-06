@@ -2,8 +2,8 @@
 name = "datalog_syntax_macros"
 version = "0.1.0"
 edition = "2021"
+description = "Two procedural macros to easily write datalog programs and rules"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 proc-macro = true
 
