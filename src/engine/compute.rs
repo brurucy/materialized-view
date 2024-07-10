@@ -1,7 +1,13 @@
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+
+
 use dbsp::{CollectionHandle, DBSPHandle, IndexedZSet, OrdIndexedZSet, OrdZSet, OutputHandle, Runtime, Stream};
 use dbsp::operator::FilterMap;
+use internment::Intern;
+use rkyv::{Archive, Deserialize, Fallible, Serialize};
+use size_of::{Context, SizeOf, TotalSize};
+
 use crate::engine::storage::{RelationIdentifier, StorageLayer};
 use crate::interning::hash::new_random_state;
 use crate::interning::herbrand_universe::{InternedAtom, InternedRule};
@@ -45,6 +51,52 @@ pub(crate) type RuleSink = CollectionHandle<InternedRule, Weight>;
 pub(crate) type FactSource = OutputHandle<OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>;
 pub(crate) type LastHash = u64;
 pub(crate) type NewHash = u64;
+
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Proof(Intern<EncodedRewrite>);
+
+#[derive(Archive, Deserialize, Serialize)]
+struct ArchivedProof(u64);
+
+impl Archive for Proof {
+    type Archived = ArchivedProof;
+    type Resolver = ();
+
+    unsafe fn resolve(&self, _: usize, _: Self::Resolver, out: *mut Self::Archived) {
+        out.write(ArchivedProof(self.0.as_ref().as_ptr() as u64));
+    }
+}
+
+impl<S: Fallible> Serialize<S> for Proof {
+    fn serialize(&self, serializer: &mut S) -> Result<Self::Resolver, S::Error> {
+        let addr = self.0.as_ref().as_ptr() as u64;
+        rkyv::Serialize::serialize(&addr, serializer)?;
+        Ok(())
+    }
+}
+
+impl<D: Fallible + ?Sized> Deserialize<Proof, D> for ArchivedProof {
+    fn deserialize(&self, _: &mut D) -> Result<Proof, D::Error> {
+        unsafe {
+            let ptr = self.0 as *const EncodedRewrite;
+            let interned = Intern::from(*(ptr.as_ref().unwrap()));
+            return Ok(Proof(interned))
+        }
+    }
+}
+
+impl Clone for Proof {
+    fn clone(&self) -> Self {
+        Proof(self.0.clone())
+    }
+}
+
+impl SizeOf for Proof {
+    fn size_of_children(&self, context: &mut Context) {
+        context.add(self.0.size_of().total_bytes());
+    }
+}
+
 pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
     let (dbsp_runtime, ((fact_source, fact_sink), rule_sink)) =
         Runtime::init_circuit(std::thread::available_parallelism().unwrap().get(), |circuit| {
@@ -96,9 +148,9 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
 
                 (last_hash as LastHash, (0_u64 as NewHash, (head.0, encode_atom_terms(&head.1))))
             });
-            let empty_rewrite = EncodedRewrite::default();
+            let empty_rewrite = Proof(Intern::new(EncodedRewrite::default()));
             let empty_rewrites =  rule_source
-                .index_with(move |(_rule_id, _head, _body)| (0u64, empty_rewrite))
+                .index_with(move |(_rule_id, _head, _body)| (0u64, empty_rewrite.clone()))
                 .distinct();
 
             let fact_index = fact_source
@@ -112,7 +164,7 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                      (idb_index, _edb_union_idb, rewrites): (
                          Stream<_, OrdIndexedZSet<(RelationIdentifier, ProjectedEncodedFact), EncodedAtom, Weight>>,
                          Stream<_, OrdZSet<(RelationIdentifier, EncodedAtom), Weight>>,
-                         Stream<_, OrdIndexedZSet<LastHash, EncodedRewrite, Weight>>,
+                         Stream<_, OrdIndexedZSet<LastHash, Proof, Weight>>,
                      )| {
                         let iteration = iteration.delta0(child);
                         let edb_index = fact_index.delta0(child);
@@ -124,24 +176,24 @@ pub(crate) fn build_circuit() -> (DBSPHandle, FactSink, RuleSink, FactSource) {
                         let previous_propagated_rewrites = rewrites.join_index(
                             &iteration,
                             |_key, rewrite, (new_hash, (current_body_atom_symbol, current_body_atom))| {
-                                let encoded_atom = apply_rewrite(rewrite, &current_body_atom);
+                                let encoded_atom = apply_rewrite(rewrite.0.as_ref(), &current_body_atom);
 
-                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, *rewrite)))
+                                Some(((*current_body_atom_symbol, project_encoded_atom(&encoded_atom)), (*new_hash, encoded_atom, rewrite.clone())))
                             },
                         );
 
                         let rewrite_product =
                             idb_index.join_index(&previous_propagated_rewrites, |(_relation_symbol, _projected_fresh_atom), encoded_fact, (new_hash, encoded_fresh_atom, rewrite)| {
                                 let unification = unify_encoded_atom_with_encoded_rewrite(*encoded_fresh_atom, *encoded_fact).unwrap();
-                                let extended_rewrite = merge_right_rewrite_into_left(*rewrite, unification);
+                                let extended_rewrite = merge_right_rewrite_into_left(*(rewrite.0), unification);
 
-                                Some((*new_hash, extended_rewrite))
+                                Some((*new_hash, Proof(Intern::new(extended_rewrite))))
                             });
 
 
                         let fresh_facts = end_for_grounding
                             .join_index(&rewrite_product, |_last_hash, (_new_hash, (head_atom_symbol, head_atom)), final_substitution| {
-                                let fresh_encoded_fact = apply_rewrite(final_substitution, head_atom);
+                                let fresh_encoded_fact = apply_rewrite(final_substitution.0.as_ref(), head_atom);
 
                                 Some((*head_atom_symbol, fresh_encoded_fact))
                             });

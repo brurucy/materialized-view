@@ -20,3 +20,8 @@ identity-hash="0.1.0"
 once_cell = "1.19.0"
 ahash = "0.8.11"
 byteorder = "1.5.0"
+internment = { version="0.8.4", features = ["arena"] }
+sharded-slab = "0.1.1"
+rkyv = "0.7.44"
+size-of = "0.1.5"
+serde = { version = "1.0.193", features = ["derive"] }
